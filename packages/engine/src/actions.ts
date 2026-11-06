@@ -1,4 +1,4 @@
-import { isPrivateSpeech, populationHere, roomDescription, readObjectAction, movementLocations, readMovement, type ActionIntent, type Character, type Observation, type DialogueLine, type PlayerInput, type StateChange, type WorldState } from "@worldsim/shared";
+import { carriedItems, inspectableItems, isPrivateSpeech, populationHere, roomDescription, readObjectAction, movementLocations, readMovement, type ActionIntent, type Character, type Observation, type DialogueLine, type PlayerInput, type StateChange, type WorldState } from "@worldsim/shared";
 import { impliedListener, lastNpcLine } from "./conversation";
 import { knownFacts, player, present } from "./state";
 import { planReading, type ReadingPlan } from "./reading";
@@ -242,15 +242,17 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
     return {...fixed(c, "时长由游戏时钟计算并受单次上限约束"), waiting:true, eventNeedle:wait.eventNeedle};
   }
   if (intent.kind === "use") {
-    const carried = world.items.filter(i => king.inventory.includes(i.id));
     const action = explicit?.object;
-    if (action?.kind !== "use" || !action.object) return refused("请说明你现在要拿出或使用哪件随身物品。");
-    const item = directObject(carried, action.object, !!meaning);
-    if (!item) return refused("你身上没有这件物品。");
+    if (action?.kind !== "use" || !action.object) return refused("请说明你要查看或使用哪件物品。");
+    const inventoryOnly = !action.inspection || action.inventoryOnly;
+    const candidates = inventoryOnly ? carriedItems(world, king) : inspectableItems(world, king);
+    const item = directObject(candidates, action.object, !!meaning);
+    if (!item) return refused(inventoryOnly ? "你身上没有这件物品。" : "这里找不到能与这个称呼唯一对应的物品。");
     const handling = action.inspection === "look" ? "你仔细端详" + item.name + "。" :
       "你拿起" + item.name + (action.inspection === "handle" ? "，仔细端详。" : "。");
     const detail = action.inspection ? item.appearance ?? item.description : item.description;
-    return {...fixed(line("use", handling + detail, 1), "该物品已归玩家持有"), itemId:item.id};
+    const check = king.inventory.includes(item.id) ? "该物品已归玩家持有" : "该物品在场可查看";
+    return {...fixed(line("use", handling + detail, 1), check), itemId:item.id};
   }
   if (intent.kind === "arrest") {
     const action = explicit?.object;

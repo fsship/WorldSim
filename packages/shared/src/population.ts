@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { WorldState } from "./domain";
+import { placedItemsAt, readablesAt } from "./scene-objects";
 
 const name = z.string().trim().min(1).max(160);
 const minute = z.number().int().safe().nonnegative();
@@ -47,6 +48,10 @@ export function populationHere(world:WorldState,locationId:string) {
 
 export function roomDescription(world:WorldState,room:WorldState["locations"][number]):string {
   const people = populationHere(world,room.id);
-  return room.description + people.map(g => g.count + "名" + g.name + "在这里" +
+  const readables = readablesAt(world, room.id).filter(doc => !room.description.includes(doc.name));
+  const documents = readables.length ? "这里可以翻阅" + readables.map(doc => "《" + doc.name + "》").join("、") + "。" : "";
+  const placed = placedItemsAt(world, room.id);
+  const objects = placed.length ? "这里放着" + placed.map(item => item.name).join("、") + "。" : "";
+  return room.description + documents + objects + people.map(g => g.count + "名" + g.name + "在这里" +
     (g.activity === "在本地活动" ? "活动。" : g.activity + "。")).join("");
 }

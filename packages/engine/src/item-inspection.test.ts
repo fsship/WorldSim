@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MockLLMProvider } from "@worldsim/llm";
 import { createPalace } from "@worldsim/scenarios";
-import type { WorldState } from "@worldsim/shared";
-import { projectTurn, runTurn } from "./index";
+import type { ParseContext, TurnPlan, WorldState } from "@worldsim/shared";
+import { projectTurn, projectWorld, runTurn, scheduleEvent } from "./index";
 
 const screenshotInput = "我拿起王室印玺仔细看";
 const carriedBy = (world: WorldState, item: string) =>
@@ -10,6 +10,69 @@ const carriedBy = (world: WorldState, item: string) =>
 const wrongGuess = new MockLLMProvider({
   parse: () => ({kind:"use", item:"王室印玺"}),
   decideNpcAction: () => ({kind:"stay"}),
+});
+
+it("同一趟送货能把物件和文书放到指定房间，玩家到场后可以分别按别名查看", async () => {
+  const world = createPalace("workshop-delivery");
+  const locationId = "bell-workshop";
+  const availableAfterEvent = "foundry-courier";
+  world.locations.push({id:locationId, name:"铸钟室", aliases:[], description:"窗下有一张木案。", ambience:"炉火正旺。", exits:["hall"]});
+  world.locations.find(room => room.id === "hall")!.exits.push(locationId);
+  const gauge = {id:"casting-gauge", name:"铸钟量规", aliases:["铜尺"], description:"用来核对钟壁的厚度。",
+    appearance:"尺缘有三条朱砂刻线。", locationId, availableAfterEvent};
+  const slip = {id:"inspection-slip", name:"检验手记", aliases:["验单"], locationId, availableAfterEvent,
+    entries:[{title:"初验", text:"第一口钟的壁厚与样规相符。"}]};
+  world.items.push(gauge);
+  world.readables.push(slip);
+  scheduleEvent(world, {...world.queue[0], id:availableAfterEvent, at:490, locationId, perception:"local", text:"工匠把两件货送到了木案上。"});
+
+  const offline = new MockLLMProvider({decideNpcAction:() => ({kind:"stay"})});
+  const beforeDelivery = await runTurn(world, "前往铸钟室", offline);
+  expect(projectWorld(beforeDelivery.world).location.id).toBe(locationId);
+  const stillInHall = await runTurn(world, "等待十分钟", offline);
+  expect(stillInHall.world.queue.find(event => event.id === availableAfterEvent)?.status).toBe("executed");
+  const input = "我端详铜尺";
+  const interpretInspection = (visible: boolean) => Object.assign(new MockLLMProvider(), {
+    async interpret(context: ParseContext): Promise<TurnPlan> {
+      for (const object of [gauge, slip]) {
+        const ref = context.referents?.find(ref => ref.id === object.id && ref.aliases.includes(object.aliases[0]));
+        expect(Boolean(ref)).toBe(visible);
+        expect(context.surroundings?.includes(object.name)).toBe(visible);
+      }
+      expect(JSON.stringify(context)).not.toContain(gauge.appearance);
+      expect(JSON.stringify(context)).not.toContain(slip.entries[0].text);
+      return {kind:"item", itemId:gauge.id, interaction:"inspect"};
+    },
+  });
+  for (const inaccessible of [beforeDelivery.world, stillInHall.world]) {
+    const {turn} = await runTurn(inaccessible, input, interpretInspection(false));
+    expect(turn.resolution.status).toBe("refused");
+    expect(turn.narrative).not.toContain(gauge.appearance);
+  }
+
+  const entered = await runTurn(stillInHall.world, "前往铸钟室", offline);
+  const room = projectWorld(entered.world).location;
+  expect(room.description).toContain(gauge.name);
+  expect(room.description).toContain(slip.name);
+  const inspected = await runTurn(entered.world, input, interpretInspection(true));
+  expect(inspected.turn.narrative).toContain(gauge.appearance);
+  expect((await runTurn(entered.world, input, offline)).turn.narrative).toContain(gauge.appearance);
+  const bag = "我从背包里拿出铜尺仔细看";
+  const bagPlan = Object.assign(new MockLLMProvider(), {
+    async interpret(context: ParseContext): Promise<TurnPlan> {
+      expect(context.referents?.find(ref => ref.id === gauge.id)?.carried).toBe(false);
+      return {kind:"item", itemId:gauge.id, interaction:"handle_inspect", inventoryOnly:true};
+    },
+  });
+  for (const provider of [offline, bagPlan]) {
+    const {turn} = await runTurn(inspected.world, bag, provider);
+    expect(turn.resolution.status).toBe("refused");
+    expect(turn.narrative).not.toContain(gauge.appearance);
+  }
+  const read = await runTurn(inspected.world, "阅读验单", offline);
+  expect(read.turn.narrative).toContain(slip.entries[0].text);
+  expect(carriedBy(read.world, gauge.id)).toEqual([]);
+  expect(projectWorld(read.world).player.items.map(item => item.id)).not.toContain(gauge.id);
 });
 
 describe("端详随身物品", () => {

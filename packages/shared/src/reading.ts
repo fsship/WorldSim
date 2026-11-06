@@ -8,7 +8,8 @@ export interface ReadingRequest {
   nextOnly?: true;
 }
 
-const readVerb = /^(?:低头|俯身)?(?:(?:仔细|认真|快速)地?)?(?:读一读|阅读|细读|翻阅|翻读|查阅|审阅|浏览|翻看|翻开|扫视|端详|打量|检查|检视|查验|调查|查看|细看|看一看|看一眼|看看|看了看|望了望|[扫瞥]了?一眼|看|读)\s*/u;
+const readVerb = /^(?:低头|俯身)?(?:(?:仔细|认真|快速)地?)?(?:读一读|阅读|细读|翻阅|翻读|查阅|审阅|浏览|翻看|翻开|扫视|端详|打量|检查|检视|查验|调查|查看|细看|看一看|看一眼|看看|看了(?:看|一?下)|望了望|[扫瞥]了?一眼|看|读)\s*/u;
+const readingPurpose = /^(?:我)?(?:(?:想知道|想看看|想了解|想弄清楚)[^，,；;。]+|看看(?:上面|里面)(?:写了|写着)什么)[？?]?$/u;
 const digits = '零一二三四五六七八九';
 
 function sectionNumber(text: string): number | undefined {
@@ -63,7 +64,7 @@ export function readReadingAction(input: string, names: readonly string[]): Read
   if (clauses.length > 2) return;
   const [first, purpose] = clauses;
   const action = first.replace(/((?:有|写了|写着|列着)(?:哪些|什么)[\p{L}·]*)[？?]$/u, '$1');
-  if (purpose !== undefined && !/^(?:我)?(?:想知道|想看看|想了解|想弄清楚)[^，,；;。]+[？?]?$/u.test(purpose.trim())) return;
+  if (purpose !== undefined && !readingPurpose.test(purpose.trim())) return;
   if (/[“”‘’「」『』"']|假如|如果|设想|然后|随后|并且|取消|算了|不读|不看/u.test(sentence) || /[？?]/u.test(action)) return;
   let words = action.trim().replace(/^(?:我(?:想要|想|要|决定)?\s*)?/u, '')
     .replace(/^(?:正在|此刻|现在|正)\s*/u, '')

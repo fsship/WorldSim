@@ -1,7 +1,7 @@
 import { arrivalCharacter, WorldStateSchema, type Character, type ReadableDocument, type WorldFact, type ScheduledEvent, type WorldState } from "@worldsim/shared";
 
-function palaceReadables(): ReadableDocument[] {
-  return [{
+function morningAgenda(): ReadableDocument {
+  return {
     id:"morning-agenda", locationId:"hall", name:"朝会议程", preparedBy:"steward",
     aliases:["议程", "议程单", "议程表", "晨会议程", "朝会议程表", "长桌", "桌子", "桌面"],
     entries:[
@@ -9,7 +9,30 @@ function palaceReadables(): ReadableDocument[] {
       {title:"宫门交班", text:"请卫队长呈上交接簿，逐岗核对夜班与晨班的当值人、交班时刻。"},
       {title:"各部呈报", text:"各部依次呈上奏件。需当场裁定的另列一页，其余记下承办人，留待散会后办理。"},
     ],
-  }];
+  };
+}
+
+interface PalaceDelivery {
+  eventId:string;
+  locationId:string;
+  at:number;
+  notice:string;
+  documents:Omit<ReadableDocument, "availableAfterEvent" | "locationId">[];
+}
+
+const palaceDeliveries: PalaceDelivery[] = [{
+  eventId:"dispatch", locationId:"hall", at:512, notice:"门口的侍卫呈上宫门的交接簿，请你在晨会结束前过目。",
+  documents:[{
+    id:"gate-handover-log", name:"宫门交接簿", aliases:["交接簿", "宫门的交接簿"],
+    entries:[
+      {title:"正门岗", text:"八时整，夜班一号卫兵将门钥匙一串交给晨班三号卫兵。两人当面点清，在交班栏和接班栏各画了押。"},
+      {title:"门楼岗", text:"八时一刻，晨班四号卫兵接替夜班二号卫兵。灯笼两盏、号角一支，逐件照数交接。"},
+    ],
+  }],
+}];
+
+function deliveredDocuments({eventId, locationId, documents}: PalaceDelivery): ReadableDocument[] {
+  return documents.map(document => ({...structuredClone(document), locationId, availableAfterEvent:eventId}));
 }
 
 function originalPalaceLocations(): WorldState["locations"] {
@@ -132,15 +155,24 @@ export function loadScenarioWorld(saved: unknown): WorldState {
       }
     }
   }
-  if (!Object.hasOwn(saved as object, "readables") &&
-      world.locations.some(location => location.id === "hall")) {
-    world.readables = palaceReadables();
-  }
-  const original = palaceReadables()[0];
+  const hasHall = world.locations.some(location => location.id === "hall");
+  const original = morningAgenda();
+  if (hasHall && !Object.hasOwn(saved as object, "readables")) world.readables = [original];
   const agenda = world.readables.find(doc => doc.id === original.id && doc.name === original.name && doc.locationId === original.locationId);
-  if (agenda && agenda.preparedBy === undefined && agenda.entries.length === original.entries.length &&
-      agenda.entries.every((e,i) => e.title === original.entries[i].title && e.text === original.entries[i].text))
-    agenda.preparedBy = original.preparedBy;
+  if (agenda && agenda.entries.length === original.entries.length &&
+      agenda.entries.every((e,i) => e.title === original.entries[i].title && e.text === original.entries[i].text)) {
+    if (agenda.preparedBy === undefined) agenda.preparedBy = original.preparedBy;
+    // The former stock collection consisted of this agenda alone. Restore the
+    // bundle from each authored delivery whose notice is present in this save.
+    if (hasHall && world.readables.length === 1 && agenda.preparedBy === original.preparedBy && !agenda.availableAfterEvent &&
+        agenda.aliases.length === original.aliases.length && original.aliases.every(alias => agenda.aliases.includes(alias))) {
+      for (const delivery of palaceDeliveries) {
+        const hasNotice = world.queue.some(e => e.id === delivery.eventId && e.type === "notice" &&
+          e.perception === "local" && e.locationId === delivery.locationId && e.text === delivery.notice);
+        if (hasNotice && world.locations.some(l => l.id === delivery.locationId)) world.readables.push(...deliveredDocuments(delivery));
+      }
+    }
+  }
   const seal = world.items.find(item => item.id === "seal" && item.name === "王室印玺" && item.description === sealDescription);
   if (seal && seal.appearance === undefined) seal.appearance = sealAppearance;
   const guard = world.rules.orders.find(rule => rule.npcId === "captain" && rule.flag === "guardSecured");
@@ -207,7 +239,8 @@ export function createPalace(gameId: string): WorldState {
   const opening = "晨光穿过议事厅的高窗。长桌上摊着今日的朝会议程，王室印玺就在你的手边。卫队长与宫廷侍从立在阶下，等候你的吩咐。";
   const queue = [
     scheduled("bell", 495, "一阵钟声掠过长廊。晨会即将开始，议事厅的门已经敞开。", { perception: "audible" }),
-    scheduled("dispatch", 512, "门口的侍卫呈上宫门的交接簿，请你在晨会结束前过目。", { perception: "local" }),
+    ...palaceDeliveries.map(({eventId, at, notice, locationId}) =>
+      scheduled(eventId, at, notice, {perception:"local", locationId})),
     scheduled("switch", 530, "一份调防令递到门房，旧班卫队开始撤岗。", {
       type: "plan", entities: ["minister", "warden"], locationId: "gate", perception: "local", important: false,
       condition: { activeActor: "minister", knows: "plot", flag: "guardSecured", equals: false },
@@ -224,7 +257,7 @@ export function createPalace(gameId: string): WorldState {
   ];
   return WorldStateSchema.parse({
     id: gameId, scenario: "王宫疑云", version: 0, time: 480, characters, facts, queue,
-    readables:palaceReadables(),
+    readables:[morningAgenda(), ...palaceDeliveries.flatMap(deliveredDocuments)],
     rules: {
       maxWait: 720, maxShort: 10,
       discoveries: [{ locationId: "archive", factId: "ledger", visibleSubject:ledgerSubject, objects: ["登记簿", "值夜登记簿", "摊开的登记簿", "案卷", "卷宗", "档案", "交接簿"], description: "你沿着登记簿逐行核对，辨出了那一处缺失的副署。" }],

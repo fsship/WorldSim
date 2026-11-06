@@ -1,5 +1,5 @@
 import {
-  ActionIntentSchema, readPlayerInput, roomDescription, turnPlanSchemaFor,
+  ActionIntentSchema, inspectableItems, readablesAt, readPlayerInput, roomDescription, turnPlanSchemaFor,
   type ActionIntent, type Character, type LLMProvider, type ParseContext, type ParseReferent,
   type PlayerInput, type TurnPlan, type WorldState,
 } from "@worldsim/shared";
@@ -21,12 +21,12 @@ function sceneContext(world: WorldState, king: Character, text: string): ParseCo
   const room = world.locations.find(l => l.id === king.locationId)!;
   const nearby = present(world, king).filter(c => c.condition !== "dead");
   const places = world.locations.filter(l => l.id === room.id || room.exits.includes(l.id));
-  const items = world.items.filter(i => king.inventory.includes(i.id));
-  const docs = world.readables.filter(doc => doc.locationId === room.id);
+  const items = inspectableItems(world, king);
+  const docs = readablesAt(world, room.id);
   const referents: ParseReferent[] = [
     ...places.map(({id,name,aliases}) => ({kind:"place" as const,id,name,aliases})),
     ...nearby.map(({id,name,aliases}) => ({kind:"npc" as const,id,name,aliases})),
-    ...items.map(({id,name,aliases}) => ({kind:"item" as const,id,name,aliases})),
+    ...items.map(({id,name,aliases}) => ({kind:"item" as const,id,name,aliases,carried:king.inventory.includes(id)})),
     ...docs.map(({id,name,aliases,entries}) => ({
       kind:"document" as const, id, name, aliases, sectionTitles:entries.map(entry => entry.title),
     })),
@@ -44,18 +44,15 @@ function sceneContext(world: WorldState, king: Character, text: string): ParseCo
       referents.push({kind:"order",id:rule.id,name:rule.summary,aliases:[],actorId:rule.npcId});
     }
   }
-  let lastDocumentId: string | undefined, lastItemId: string | undefined;
-  let foundBookmark = false;
-  for (let i = world.history.length - 1; i >= 0 && !(foundBookmark && lastItemId); i--) {
+  let bookmarkedId: string | undefined, observedId: string | undefined;
+  for (let i = world.history.length - 1; i >= 0 && !(bookmarkedId && observedId); i--) {
     const event = world.history[i];
     if (!event.recipients.includes(king.id)) continue;
-    const documentId = event.bookmark?.documentId;
-    if (!foundBookmark && documentId) {
-      foundBookmark = true;
-      if (docs.some(d => d.id === documentId)) lastDocumentId = documentId;
-    }
-    if (!lastItemId && event.observedItemId && king.inventory.includes(event.observedItemId)) lastItemId = event.observedItemId;
+    bookmarkedId ??= event.bookmark?.documentId;
+    observedId ??= event.observedItemId;
   }
+  const lastDocumentId = docs.find(doc => doc.id === bookmarkedId)?.id;
+  const lastItemId = items.find(item => item.id === observedId)?.id;
   const lastSpeaker = impliedListener(lastNpcLine(world, king), nearby);
   let previousWait: ParseContext["previousWait"];
   for (let i = world.history.length - 1; i >= 0; i--) {
@@ -116,9 +113,9 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: TurnPlan
     }
     case "item": {
       const intent: ActionIntent = {kind:"use", item:plan.itemId};
-      if (!offered("item", plan.itemId)) return rejected("你身上没有这件物品。", intent);
+      if (!offered("item", plan.itemId)) return rejected("此刻无法接触到这件物品。", intent);
       const inspection = plan.interaction === "use" ? undefined : plan.interaction === "inspect" ? "look" : "handle";
-      return run(intent,{object:{kind:"use",object:plan.itemId,inspection}});
+      return run(intent,{object:{kind:"use",object:plan.itemId,inspection,inventoryOnly:plan.inventoryOnly}});
     }
     case "investigate": {
       const subject = offered("subject", plan.focus);
@@ -173,8 +170,11 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   // The real provider never enters this branch, including on a model or validation error.
   const room = world.locations.find(l => l.id === king.locationId)!;
   const readableIds = new Set(world.history.flatMap(e => e.bookmark && e.recipients.includes(king.id) ? [e.bookmark.documentId] : []));
-  const readableNames = world.readables.filter(d => d.locationId === room.id || readableIds.has(d.id)).flatMap(d => [d.name, ...d.aliases]);
-  const itemNames = world.items.filter(item => king.inventory.includes(item.id)).flatMap(i => [i.name, ...i.aliases]);
+  const readableNames = context.referents!.filter(ref => ref.kind === "document").flatMap(ref => [ref.name, ...ref.aliases]);
+  for (const doc of world.readables) {
+    if (doc.locationId !== room.id && readableIds.has(doc.id)) readableNames.push(doc.name, ...doc.aliases);
+  }
+  const itemNames = context.referents!.filter(ref => ref.kind === "item").flatMap(ref => [ref.name, ...ref.aliases]);
   const explicit = readPlayerInput(text, context.people, [room.name, ...room.aliases], readableNames, itemNames);
   if (explicit?.waiting?.resume && context.previousWait) {
     const {intent,resolution} = executeMeaning(world, context, {kind:"wait", resume:true});

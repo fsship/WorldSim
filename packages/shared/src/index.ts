@@ -4,6 +4,7 @@ export * from './population';
 export * from './speech';
 export * from './player-input';
 export * from './reading';
+export * from './scene-objects';
 export * from './waiting';
 export * from './objects';
 export * from './movement';

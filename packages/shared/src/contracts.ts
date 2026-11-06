@@ -79,9 +79,10 @@ export type PublicConfig = z.infer<typeof PublicConfigSchema>;
 const parseReferentSchema = z.object({
   kind: z.enum(['place', 'npc', 'crowd', 'item', 'document', 'subject', 'order']),
   id: referenceText, name: referenceText, aliases: z.array(referenceText), actorId: referenceText.optional(),
-  sectionTitles: z.array(nonempty).optional(),
+  sectionTitles: z.array(nonempty).optional(), carried:z.boolean().optional(),
 }).strict().refine(value => value.actorId === undefined || value.kind === 'order', '只有命令选项可带执行人')
-  .refine(value => value.sectionTitles === undefined || value.kind === 'document', '只有文书可带目录');
+  .refine(value => value.sectionTitles === undefined || value.kind === 'document', '只有文书可带目录')
+  .refine(value => value.carried === undefined || value.kind === 'item', '只有物品可标记是否随身携带');
 export type ParseReferent = z.infer<typeof parseReferentSchema>;
 export const PendingWaitSchema = z.object({
   until:minute, event:referenceText.optional(), rest:z.boolean().optional(),
@@ -110,7 +111,8 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
+    inventoryOnly:z.boolean().optional(), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('investigate'), focus:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('read'), reading:readSelection}).strict(),
   z.object({

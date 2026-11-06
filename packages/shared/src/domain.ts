@@ -11,8 +11,9 @@ export const locationSchema = z.object({
   id, name: id, aliases: z.array(id), description: id, ambience: id, exits: z.array(id),
 }).strict();
 
+const sceneObject = {id, name:id, aliases:z.array(id), availableAfterEvent:id.optional()};
 export const readableDocumentSchema = z.object({
-  id, locationId: id, name: id, aliases: z.array(id), preparedBy:id.optional(),
+  ...sceneObject, locationId:id, preparedBy:id.optional(),
   entries: z.array(z.object({ title: id, text: id }).strict()).min(1),
 }).strict();
 export type ReadableDocument = z.infer<typeof readableDocumentSchema>;
@@ -125,7 +126,7 @@ export const worldStateSchema = z.object({
   readables: z.array(readableDocumentSchema)
     .refine(documents => new Set(documents.map(document => document.id)).size === documents.length, "文书标识重复")
     .default([]),
-  items: z.array(z.object({ id, name: id, aliases: z.array(id), description: id, appearance: id.optional() }).strict()),
+  items: z.array(z.object({ ...sceneObject, locationId:id.optional(), description:id, appearance:id.optional() }).strict()),
   facts: z.array(worldFactSchema), queue: z.array(scheduledEventSchema),
   history: z.array(worldEventSchema), variables: vars,
 }).strict();

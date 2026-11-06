@@ -1,5 +1,5 @@
 import {
-  arrivalCharacter, populationHere, roomDescription, StateChangeSchema, type Character, type Observation, type PublicState, type StateChange,
+  arrivalCharacter, carriedItems, populationHere, roomDescription, StateChangeSchema, type Character, type Observation, type PublicState, type StateChange,
   type WorldEvent, type WorldState, type WorldFact,
 } from "@worldsim/shared";
 import { meetCrowdMember, witnessedSpeech } from "./crowd-contact";
@@ -67,7 +67,7 @@ export function projectWorld(world: WorldState): PublicState {
     exits: world.locations.filter(l => location.exits.includes(l.id)).map(l => ({id: l.id, name: l.name})),
     present: present(world, king).map(c => ({id: c.id, name: c.name, role: c.role})),
     player: { id: king.id, name: king.name, role: king.role, condition: {healthy:"安康", detained:"被拘押", dead:"死亡"}[king.condition],
-      items: world.items.filter(i => king.inventory.includes(i.id)).map(({id, name, description}) => ({id, name, description})) },
+      items: carriedItems(world, king).map(({id, name, description}) => ({id, name, description})) },
     facts: knownFacts(world, king).map(f => ({id: f.id, text: f.content.text})),
   };
 }

@@ -1,4 +1,4 @@
-import type { Observation, ReadableDocument, ReadingRequest, WorldState } from "@worldsim/shared";
+import { readablesAt, type Observation, type ReadableDocument, type ReadingRequest, type WorldState } from "@worldsim/shared";
 import { createTurnClock, type TurnClock } from "./scheduler";
 import { player, record } from "./state";
 
@@ -18,7 +18,7 @@ function lastBookmark(world: WorldState, readerId: string, documentId?: string) 
 
 export function planReading(world: WorldState, request: ReadingRequest): ReadingPlan | {notice:string} {
   const reader = player(world);
-  const local = world.readables.filter(doc => doc.locationId === reader.locationId);
+  const local = readablesAt(world, reader.locationId);
   const previous = lastBookmark(world, reader.id);
   let candidates = local;
   if (request.documentId !== undefined) {

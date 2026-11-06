@@ -2,12 +2,68 @@ import { describe, expect, it } from "vitest";
 import { MockLLMProvider } from "@worldsim/llm";
 import { createPalace } from "@worldsim/scenarios";
 import { WorldStateSchema, type GameTurn, type NpcActionContext, type ParseContext, type TurnPlan, type WorldState } from "@worldsim/shared";
-import { runTurn } from "./index";
+import { cancelEvent, runTurn } from "./index";
 
 const greeting = '"早，艾琳"——我回复道，顺手看了看长桌，想知道有哪些议程';
 const quietNpc = () => new MockLLMProvider({decideNpcAction: () => ({kind:"stay"})});
 const agenda = (world: WorldState) => world.readables.find(d => d.id === "morning-agenda")!;
 const worldLines = (turn: GameTurn) => turn.observations.filter(o => o.kind === "world").map(o => o.text).join("\n");
+
+describe("侍卫呈上的宫门交接簿", () => {
+  const input = "我看了下交接簿，看看上面写了什么";
+
+  it("08:32 等待被呈交通报打断，原话在离线和模型解释路径都读到簿上条目", async () => {
+    const offline = quietNpc();
+    const bell = await runTurn(createPalace("ledger-read"), "等待晨会钟声", offline);
+    const delivered = await runTurn(bell.world, "等待三十分钟", offline);
+    expect(delivered.world.time).toBe(512);
+    expect(worldLines(delivered.turn)).toContain("侍卫呈上宫门的交接簿");
+    const ledger = delivered.world.readables.find(doc => doc.availableAfterEvent === "dispatch")!;
+    const interpreted = Object.assign(quietNpc(), {
+      async interpret(context: ParseContext): Promise<TurnPlan> {
+        expect(context.text).toBe(input);
+        const offered = context.referents?.find(ref => ref.kind === "document" && [ref.name, ...ref.aliases].includes("交接簿"));
+        expect(offered?.id).toBe(ledger.id);
+        expect(offered?.sectionTitles).toEqual(ledger.entries.map(entry => entry.title));
+        for (const entry of ledger.entries) expect(JSON.stringify(context)).not.toContain(entry.text);
+        return {kind:"read", reading:{documentId:offered!.id}};
+      },
+    });
+    for (const provider of [offline, interpreted]) {
+      const {turn} = await runTurn(delivered.world, input, provider);
+      expect(turn.resolution.status).toBe("resolved");
+      expect(turn.endTime).toBe(512 + ledger.entries.length);
+      for (const entry of ledger.entries) expect(worldLines(turn)).toContain(entry.text);
+      for (const entry of agenda(delivered.world).entries) expect(turn.narrative).not.toContain(entry.text);
+    }
+  });
+
+  it("呈交前、取消后以及离开议事厅时，目录和阅读裁决都拒绝这份簿册", async () => {
+    const offline = quietNpc();
+    const bell = await runTurn(createPalace("ledger-unavailable"), "等待晨会钟声", offline);
+    const ledger = bell.world.readables.find(doc => doc.availableAfterEvent === "dispatch")!;
+    const cancelled = structuredClone(bell.world);
+    cancelEvent(cancelled, "dispatch");
+    const afterDeadline = await runTurn(cancelled, "等待十七分钟", offline);
+    expect(afterDeadline.world.time).toBe(512);
+    const delivered = await runTurn(bell.world, "等待三十分钟", offline);
+    const away = await runTurn(delivered.world, "我前往宫门", offline);
+    expect(away.world.characters.find(c => c.kind === "player")?.locationId).toBe("gate");
+    const guessesId = Object.assign(quietNpc(), {
+      async interpret(context: ParseContext): Promise<TurnPlan> {
+        expect(context.referents?.filter(ref => ref.kind === "document").map(ref => ref.id)).not.toContain(ledger.id);
+        return {kind:"read", reading:{documentId:ledger.id}};
+      },
+    });
+    for (const world of [bell.world, afterDeadline.world, away.world]) {
+      const {turn} = await runTurn(world, input, guessesId);
+      expect(turn.resolution.status).toBe("refused");
+      expect(turn.endTime).toBe(world.time);
+      expect(turn.events.some(event => event.bookmark)).toBe(false);
+      for (const entry of ledger.entries) expect(turn.narrative).not.toContain(entry.text);
+    }
+  });
+});
 
 describe("阅读身边的朝会议程", () => {
   it("一句话问候并阅读，NPC 只听到引语，世界纪事显示具体条目", async () => {

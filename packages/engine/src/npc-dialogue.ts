@@ -1,5 +1,5 @@
 import {
-  DialogueContextSchema, DialogueDraftSchema, DialogueReviewSchema, roomDescription, type DialogueContext,
+  DialogueContextSchema, DialogueDraftSchema, DialogueReviewSchema, readablesAt, roomDescription, type DialogueContext,
   type DialogueDraft, type LLMProvider, type WorldState, type Character, type WorldFact,
 } from "@worldsim/shared";
 import { impliedListener } from "./conversation";
@@ -181,7 +181,7 @@ export async function writeNpcReply(world: WorldState, npc: Character, input: st
     let privateText = privateGuard(world, allowedFacts(world, npc, testimonyIds, replyAudience));
     // The speaker can cite public paperwork they personally prepared here.
     // Seeing the player leaf through a document never makes its text NPC memory.
-    const prepared = world.readables.filter(doc => doc.preparedBy === npc.id && doc.locationId === npc.locationId)
+    const prepared = readablesAt(world, npc.locationId).filter(doc => doc.preparedBy === npc.id)
       .flatMap(doc => doc.entries.map(entry => ({document:doc.name, ...entry})))
       .filter(e => e.document.length <= 160 && e.title.length <= 160 && e.text.length <= 2000 &&
         ![e.document,e.title,e.text].some(privateText)).slice(0,8);
