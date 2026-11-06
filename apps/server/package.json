@@ -1,0 +1,21 @@
+{
+  "name": "@worldsim/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.3.0",
+    "@worldsim/engine": "workspace:*",
+    "@worldsim/llm": "workspace:*",
+    "@worldsim/scenarios": "workspace:*",
+    "@worldsim/shared": "workspace:*",
+    "drizzle-orm": "1.0.0-rc.5",
+    "fastify": "^5.6.2",
+    "tsx": "^4.20.6",
+    "zod": "^3.25.76"
+  }
+}

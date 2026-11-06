@@ -1,0 +1,7 @@
+{
+  "name": "@worldsim/llm",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": { "@worldsim/shared": "workspace:*", "zod": "^3.25.76" }
+}

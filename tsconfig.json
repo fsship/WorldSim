@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "types": ["node"], "lib": ["ES2022", "DOM"] },
+  "include": ["packages/**/*.ts", "apps/server/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["**/node_modules", "**/dist"]
+}

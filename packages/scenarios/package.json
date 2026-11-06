@@ -1,0 +1,7 @@
+{
+  "name": "@worldsim/scenarios",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": { "@worldsim/shared": "workspace:*" }
+}

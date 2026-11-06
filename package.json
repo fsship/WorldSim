@@ -1,0 +1,29 @@
+{
+  "name": "worldsim",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.22.0",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "node \"$npm_execpath\" --parallel --filter @worldsim/server --filter @worldsim/web dev",
+    "typecheck": "tsc --noEmit && node \"$npm_execpath\" --filter @worldsim/web typecheck",
+    "test": "vitest run",
+    "build": "node \"$npm_execpath\" typecheck && node \"$npm_execpath\" --filter @worldsim/web build",
+    "start": "NODE_ENV=production node \"$npm_execpath\" --filter @worldsim/server start",
+    "smoke": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/smoke.ts",
+    "test:live-dialogue": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-dialogue.ts",
+    "test:live-actions": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-actions.ts",
+    "test:live-hearing": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-hearing.ts",
+    "test:live-plans": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-plans.ts",
+    "test:live-attendance": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-attendance.ts",
+    "test:live-world": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-world.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
