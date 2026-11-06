@@ -28,7 +28,7 @@ export const PublicTurnSchema = z.object({
 export type PublicTurn = z.infer<typeof PublicTurnSchema>;
 const entity = z.object({ id: nonempty, name: nonempty }).strict();
 export const PublicStateSchema = z.object({
-  id: nonempty, title: nonempty, time: minute, version: minute, opening: nonempty,
+  id: nonempty, title: nonempty, scenarioId: nonempty.optional(), time: minute, version: minute, opening: nonempty,
   openingUsedFallback: z.boolean().optional(),
   openingRetryable: z.boolean().optional(),
   openingNotice: z.string().optional(),
@@ -37,7 +37,7 @@ export const PublicStateSchema = z.object({
   })).optional() }),
   exits: z.array(entity), present: z.array(entity.extend({ role: nonempty })),
   player: entity.extend({
-    role: nonempty, condition: nonempty, items: z.array(entity.extend({ description: nonempty })),
+    role: nonempty, goal: nonempty.optional(), condition: nonempty, items: z.array(entity.extend({ description: nonempty })),
   }),
   facts: z.array(z.object({ id: nonempty, text: nonempty }).strict()),
 }).strict();
@@ -277,6 +277,7 @@ export const NpcActionContextSchema = DialogueContextSchema.pick({
 }).extend({
   trigger: z.enum(['opening', 'addressed', 'ambient']),
   npc: participant,
+  personalGoals: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
   recentActions: z.array(z.object({time:minute, text:ActionTextSchema}).strict()).max(6).optional(),
   appointments:z.array(z.object({from:minute,until:minute,location:participant.shape.name,task:z.string().min(1).max(300)}).strict()).max(4).optional(),
   exits: z.array(z.object({id: z.string().trim().min(1).max(160), name: participant.shape.name}).strict()).max(32),

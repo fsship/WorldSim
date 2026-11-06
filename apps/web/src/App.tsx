@@ -8,15 +8,16 @@ import { Status } from './Status'
 import { Modal } from './Modal'
 import { PageLink, type Navigate } from './PageLink'
 import { ConfigPanel, HistoryPanel, SavesPanel, WaitPanel } from './Panels'
+import { ScenarioLibrary } from './ScenarioLibrary'
 
 type Panel = 'history' | 'wait' | 'saves' | 'settings' | 'new' | 'status' | 'nav'
 const panels: Record<Panel, [string, IconName]> = {
   history: ['历史记录', 'history'], wait: ['时间控制', 'hourglass'], saves: ['存档管理', 'archive'],
   settings: ['模型设置', 'sliders'], new: ['新建游戏', 'plus'], status: ['世界状态', 'panel'], nav: ['世界导航', 'compass']
 }
-function SideNav({ panel, config, open, disabled, navigate }: { navigate: Navigate, panel: Panel | null, config: PublicConfig | null, open: (id: Panel | null) => void, disabled: boolean }) {
+function SideNav({ panel, config, open, disabled, hasGame, navigate }: { navigate: Navigate, panel: Panel | null, config: PublicConfig | null, open: (id: Panel | null) => void, disabled: boolean, hasGame: boolean }) {
   function link(id: Panel | null, label: string, icon: IconName) {
-    return <button type="button" key={label} className={'nav-link' + ((panel === id || (id === null && panel === 'nav')) ? ' selected' : '')} onClick={() => open(id)} disabled={disabled} aria-current={panel === id ? 'page' : undefined}>
+    return <button type="button" key={label} className={'nav-link' + ((panel === id || (id === null && panel === 'nav')) ? ' selected' : '')} onClick={() => open(id)} disabled={disabled || (!hasGame && (id === 'history' || id === 'saves' || id === 'wait'))} aria-current={panel === id ? 'page' : undefined}>
       <Icon name={icon} size={18}/><span>{label}</span>
     </button>
   }
@@ -32,13 +33,14 @@ function SideNav({ panel, config, open, disabled, navigate }: { navigate: Naviga
     <button className="engine-indicator" disabled={disabled} onClick={() => open('settings')}><span className="engine-mark"><Icon name="sparkle" size={17}/></span><span><b>模拟引擎</b><small><i/>{config ? config.mode === 'mock' ? '本地 Mock' : config.model : '连接中…'}</small></span><Icon name="chevron" size={13}/></button>
   </nav>
 }
-function Hero({ game }: { game: GameView | null }) {
-  return <section className="hero" aria-label="当前剧本">
-    <img className="hero-art" src="/palace.webp" alt="阳光斜照进王宫高耸的拱窗与议事厅" fetchPriority="high"/>
+function Hero({ game }: { game: GameView }) {
+  const palace = game.state.scenarioId === 'palace'
+  return <section className={'hero' + (palace ? '' : ' hero-generic')} aria-label="当前剧本">
+    {palace && <img className="hero-art" src="/palace.webp" alt="" fetchPriority="high"/>}
     <div className="hero-shade"/>
     <div className="hero-content"><div className="hero-kicker"><span/>当前剧本</div>
-      <h1>{game?.state.title ?? '王宫疑云'}</h1>
-      {game && <div className="hero-meta"><span><Icon name="pin" size={14}/>{game.state.location.name}</span><i/><span><Icon name="clock" size={14}/>{dayText(game.state.time)} · {timeText(game.state.time)}</span></div>}
+      <h1>{game.state.title}</h1>
+      <div className="hero-meta"><span><Icon name="pin" size={14}/>{game.state.location.name}</span><i/><span><Icon name="clock" size={14}/>{dayText(game.state.time)} · {timeText(game.state.time)}</span></div>
     </div>
     <i className="hero-corner tl"/><i className="hero-corner br"/>
   </section>
@@ -48,6 +50,7 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
   const [config, setConfig] = useState<PublicConfig | null>(null)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [bootError, setBootError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [boot, setBoot] = useState(0)
@@ -63,8 +66,9 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
   const lock = (value: boolean) => { locked.current = value; setBusy(value) }
   useEffect(() => {
     let active = true
-    setBootError('')
-    void loadCurrent().then(view => { if (active) accept(view) }, e => { if (active) setBootError(errorText(e)) })
+    setBootError(''); setLoading(true)
+    void loadCurrent().then(view => { if (active && view) accept(view) }, e => { if (active) setBootError(errorText(e)) })
+      .finally(() => { if (active) setLoading(false) })
     void api.settings().then(value => { if (active) setConfig(value) }, () => undefined)
     return () => { active = false }
   }, [boot, accept])
@@ -90,13 +94,7 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
   function switchGame(view: GameView) {
     accept(view); setDraft(''); pending.current = null; setPanel(null); setError('')
   }
-  async function newGame() {
-    if (locked.current) return
-    lock(true); setError('')
-    try { switchGame(await api.create()); setNotice('新游戏已建立') }
-    catch (e) { setError(errorText(e)) }
-    finally { lock(false) }
-  }
+  const library = <ScenarioLibrary busy={busy} setBusy={lock} onStart={view => { switchGame(view); setNotice('新游戏已建立') }}/>
   async function retryOpening() {
     if (locked.current || !game || game.state.version !== 0 || !game.state.openingRetryable) return
     lock(true); setError('')
@@ -154,18 +152,21 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
   }
   const disabled = busy || !game
   return <div className="app-shell">
-    <aside className="desktop-nav"><SideNav panel={panel} open={open} config={config} disabled={disabled} navigate={leaveForLogs}/></aside>
+    <aside className="desktop-nav"><SideNav panel={panel} open={open} config={config} disabled={busy} hasGame={!!game} navigate={leaveForLogs}/></aside>
     <main className="workbench">
       <header className="topbar">
-        <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => open('nav')} disabled={busy}><Icon name="menu"/></button><Icon name="book" size={16}/><span>世界剧场</span><span className="crumb-separator">/</span><b>{game?.state.title ?? '王宫疑云'}</b></div>
-        <div className="toolbar"><span className="autosave"><Icon name="cloud" size={16}/>{busy ? '正在处理' : game ? '已自动保存' : '正在连接'}</span><button className="secondary new-button" disabled={disabled} onClick={() => open('new')}><Icon name="plus" size={15}/><span>新建游戏</span></button>
+        <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => open('nav')} disabled={busy}><Icon name="menu"/></button><Icon name="book" size={16}/><span>世界剧场</span><span className="crumb-separator">/</span><b>{game?.state.title ?? '剧本库'}</b></div>
+        {game && <div className="toolbar"><span className="autosave"><Icon name="cloud" size={16}/>{busy ? '正在处理' : '已自动保存'}</span><button className="secondary new-button" disabled={disabled} onClick={() => open('new')}><Icon name="plus" size={15}/><span>新建游戏</span></button>
           <button className="icon-button mobile-status" aria-label="查看世界状态" onClick={() => open('status')} disabled={disabled}><Icon name="panel"/></button>
-        </div>
+        </div>}
       </header>
-      <div className="work-area">
+      {!game ? <div className="library-page"><section className="library-sheet"><h1>剧本库</h1>
+        {bootError ? <div className="boot-message" role="alert">{bootError}<button className="secondary small" onClick={() => setBoot(boot + 1)}>重新连接</button></div>
+          : loading ? <p role="status" className="boot-message">正在读取游戏进度…</p> : library}
+      </section></div> : <div className="work-area">
         <div className="story-column">
           <div className="reading-scroll" ref={reading} tabIndex={0} role="region" aria-label="游戏叙事"><Hero game={game}/>
-            {game ? <Journal game={game} busy={busy} onRetryOpening={() => void retryOpening()} onRetryDialogue={retryDialogue}/> : <div className="boot-message" role={bootError ? 'alert' : 'status'}>{bootError || '正在打开世界纪事…'}{bootError && <button className="secondary small" onClick={() => setBoot(boot + 1)}>重新连接</button>}</div>}
+            <Journal game={game} busy={busy} onRetryOpening={() => void retryOpening()} onRetryDialogue={retryDialogue}/>
           </div>
           <div className="composer-wrap">
             {error && !panel && <p role="alert" className="action-error">{error}</p>}
@@ -180,18 +181,18 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
             </form>
           </div>
         </div>
-        {game && <div className="desktop-status"><Status state={game.state}/></div>}
-      </div>
+        <div className="desktop-status"><Status state={game.state}/></div>
+      </div>}
     </main>
     {notice && <div className="toast" role="status"><Icon name="check" size={16}/>{notice}</div>}
-    {active && panel && <Modal key={panel} title={panels[panel][0]} icon={panels[panel][1]} wide={panel === 'history' || panel === 'saves'} onClose={() => { if (!locked.current) setPanel(null) }}>
-      {panel === 'nav' && <SideNav panel={panel} open={open} config={config} disabled={disabled} navigate={leaveForLogs}/>}
+    {active && panel && <Modal key={panel} title={panels[panel][0]} icon={panels[panel][1]} wide={panel === 'history' || panel === 'saves' || panel === 'new'} onClose={() => { if (!locked.current) setPanel(null) }}>
+      {panel === 'nav' && <SideNav panel={panel} open={open} config={config} disabled={busy} hasGame={!!game} navigate={leaveForLogs}/>}
       {panel === 'status' && game && <Status state={game.state}/>}
       {panel === 'history' && game && <HistoryPanel game={game}/>}
       {panel === 'wait' && game && <WaitPanel busy={busy} time={game.state.time} onWait={input => void act(input, true)}/>}
       {panel === 'saves' && game && <SavesPanel game={game} setBusy={lock} onLoad={view => { switchGame(view); setNotice('游戏进度已载入') }}/>}
       {panel === 'settings' && <ConfigPanel initial={config} setBusy={lock} onSaved={c => { setConfig(c); setPanel(null); setNotice('模型设置已保存') }}/>}
-      {panel === 'new' && <div className="panel-form"><p>从议事厅的清晨重新开启「王宫疑云」。当前游戏已自动保存，可随时从存档管理中载入。</p><button className="primary" disabled={busy} onClick={() => void newGame()}><Icon name="plus" size={16}/>{busy ? '正在创建…' : '开始新游戏'}</button></div>}
+      {panel === 'new' && library}
       {error && <p role="alert" className="error-text">{error}</p>}
     </Modal>}
   </div>

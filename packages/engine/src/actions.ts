@@ -262,8 +262,8 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
     if (suspect.condition !== "healthy") return refused("对方当前无法被拘押。");
     if (!king.abilities.includes(world.rules.arrestAuthority) || !world.rules.arrestEvidence.some(e => e.suspect === suspect.id && hasFact(e.factId)))
       return refused("你手头还缺少指向此人的可核验凭据。");
-    return fixed(line("detain", "卫兵应你的王命扣住了" + suspect.name + "，等候审问。", 4, [{op:"detain", actor:suspect.id}]),
-      "目标在场且可被拘押", "玩家具有王命与指向此人的证据");
+    return fixed(line("detain", "你下令扣住了" + suspect.name + "，等候审问。", 4, [{op:"detain", actor:suspect.id}]),
+      "目标在场且可被拘押", "玩家具有拘押权限与指向此人的证据");
   }
   if (intent.kind === "investigate") {
     const action = explicit?.object;
@@ -314,10 +314,10 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
     }
     if (!npc) return refused("请明确指出要向哪位在场的人下达命令。");
     if (npc.condition !== "healthy") return refused("对方目前无法执行这项命令。");
-    const summary = order?.summary ?? meaning?.order?.summary ?? "传达国王交付的命令";
+    const summary = order?.summary ?? meaning?.order?.summary ?? "传达" + king.name + "交付的命令";
     const resolution = !king.abilities.includes(world.rules.arrestAuthority) || !order || typeof world.variables[order.flag] !== "boolean"
       ? conversation(npc, "收到了命令；本回合没有落实新的安排。", "clarify", [])
-      : conversation(npc, "国王向你下令：" + summary + "。命令尚未执行。", "order", [], [],
+      : conversation(npc, king.name + "向你下令：" + summary + "。命令尚未执行。", "order", [], [],
         {summary, changes:[{op:"flag", name:order.flag, value:true}]});
     return {...resolution, speech:speechTo(npc, quiet)};
   }

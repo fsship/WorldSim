@@ -114,9 +114,10 @@ const orderSchema = z.object({
 }).strict();
 
 export const worldStateSchema = z.object({
-  id, scenario: id, version: z.number().int().nonnegative(), time: minute,
+  id, scenario: id, scenarioId:id.optional(), version: z.number().int().nonnegative(), time: minute,
   rules: z.object({
     maxWait: z.number().int().min(1).max(1440), maxShort: z.number().int().min(1).max(30),
+    useNpcGoals:z.boolean().optional(),
     discoveries: z.array(discoverySchema), testimonies: z.array(testimonySchema),
     orders: z.array(orderSchema), arrestAuthority: id, arrestEvidence: z.array(z.object({ factId: id, suspect: id }).strict()),
   }).strict(),

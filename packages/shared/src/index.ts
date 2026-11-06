@@ -1,6 +1,7 @@
 export * from './contracts';
 export * from './llm-calls';
 export * from './domain';
+export * from './scenario-definition';
 export * from './population';
 export * from './speech';
 export * from './player-input';

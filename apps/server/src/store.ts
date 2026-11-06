@@ -6,14 +6,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { and, asc, count, desc, eq, getColumns, inArray, lte, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-sqlite';
 import { displayReplyRecovery, projectTurn, projectWorld, replyRecovery } from '@worldsim/engine';
-import { loadScenarioWorld } from '@worldsim/scenarios';
+import { loadScenarioWorld, type ScenarioDefinition } from '@worldsim/scenarios';
 import {
   GameTurnSchema, GameViewSchema, llmTaskLabels, PublicTurnSchema, PublicStateSchema, WorldStateSchema,
   type GameSummary, type GameTurn, type GameView, type LlmCallDetail, type LlmCallEntry,
   type LlmCallList, type ProviderConfig, type SnapshotSummary, type WorldState,
 } from '@worldsim/shared';
 import { ApiError, versionConflict } from './errors';
-import { games, llmCalls, migration1, migration2, settings, snapshots, turns } from './schema';
+import { customScenarios, games, llmCalls, migration1, migration2, migration3, settings, snapshots, turns } from './schema';
 
 const { requestBody, responseBody, responseTruncated, ...callSummaryColumns } = getColumns(llmCalls);
 const callSearchColumns = [
@@ -45,9 +45,10 @@ export class GameStore {
       this.connection.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;');
       this.connection.exec('BEGIN IMMEDIATE');
       const version = this.connection.prepare('PRAGMA user_version').get()?.user_version;
-      if (version !== 0 && version !== 1 && version !== 2) throw new Error('当前服务无法读取此版本的存档数据库。');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('当前服务无法读取此版本的存档数据库。');
       if (version === 0) this.connection.exec(migration1);
       if (version < 2) this.connection.exec(migration2);
+      if (version < 3) this.connection.exec(migration3);
       this.connection.exec('COMMIT');
       this.db = drizzle({ client: this.connection });
     } catch (error) {
@@ -68,6 +69,31 @@ export class GameStore {
     this.db.insert(settings).values({ id: 1, config }).onConflictDoUpdate({
       target: settings.id, set: { config },
     }).run();
+  }
+
+  listCustomScenarios() {
+    const title = sql<string>`json_extract(${customScenarios.definition}, '$.title')`;
+    return this.db.select({
+      id: customScenarios.id, title,
+      description: sql<string>`json_extract(${customScenarios.definition}, '$.opening')`,
+    }).from(customScenarios).orderBy(asc(title), asc(customScenarios.id)).all();
+  }
+
+  customScenario(id: string): ScenarioDefinition {
+    const row = this.db.select().from(customScenarios).where(eq(customScenarios.id, id)).get();
+    if (!row) throw new ApiError(404, '找不到这个剧本。');
+    return row.definition;
+  }
+
+  saveCustomScenario(definition: ScenarioDefinition, existingId?: string) {
+    const id = existingId ?? 'custom-' + randomUUID();
+    if (existingId === undefined) {
+      this.db.insert(customScenarios).values({ id, definition }).run();
+    } else {
+      const change = this.db.update(customScenarios).set({ definition }).where(eq(customScenarios.id, id)).run();
+      if (!change.changes) throw new ApiError(404, '找不到这个剧本。');
+    }
+    return { id, title: definition.title, description: definition.opening, builtin: false };
   }
 
   recordLlmCall(entry: LlmCallEntry): void {
@@ -112,7 +138,7 @@ export class GameStore {
   create(initial: WorldState): GameView {
     const world = loadScenarioWorld(initial);
     this.db.insert(games).values({
-      id: world.id, title: '王宫疑云', time: world.time, version: world.version,
+      id: world.id, title: world.scenario, time: world.time, version: world.version,
       updatedAt: new Date().toISOString(), world,
     }).run();
     return this.view(world.id);
@@ -246,7 +272,7 @@ export class GameStore {
       if (!snapshot) throw new ApiError(404, '找不到这个存档快照。');
       const world = loadScenarioWorld({ ...snapshot.world, id });
       this.db.insert(games).values({
-        id, title: '王宫疑云 · 快照分支', version: world.version, time: world.time,
+        id, title: world.scenario + ' · 快照分支', version: world.version, time: world.time,
         updatedAt: new Date().toISOString(), world,
       }).run();
       const history = this.db.select().from(turns)

@@ -97,7 +97,7 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     }
   };
   if (trip?.op === "move") {
-    record(world,{source:"departure", kind:"world", text:"国王离开了" + view.location.name + "。",
+    record(world,{source:"departure", kind:"world", text:king.name + "离开了" + view.location.name + "。",
       perception:"addressed", recipients:present(world,king).filter(c => c.condition !== "dead").map(c => c.id),
       locationId:king.locationId, changes:[{op:"depart",actor:king.id,to:trip.to,arrivesAt:world.time + duration}]});
   } else commitAction();

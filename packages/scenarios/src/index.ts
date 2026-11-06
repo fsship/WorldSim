@@ -1,4 +1,20 @@
 import { arrivalCharacter, WorldStateSchema, type Character, type ReadableDocument, type WorldFact, type ScheduledEvent, type WorldState } from "@worldsim/shared";
+import { createCustomScenario, lighthouse } from './authored';
+export { ScenarioDefinitionSchema, type ScenarioDefinition } from '@worldsim/shared';
+export { createCustomScenario } from './authored';
+
+export const BUILTIN_SCENARIOS = [
+  {id:'palace', title:'王宫疑云', description:'晨会将在一刻钟后开始。你是国王，卫队长与宫廷侍从已在议事厅候命。'},
+  {id:'lighthouse', title:lighthouse.title, description:'海雾封住航道。你是灯塔的值班员，得赶在渡船进港前查明灯号。'},
+] as const;
+
+export function createBuiltinScenario(scenarioId:string, gameId:string): WorldState {
+  switch (scenarioId) {
+    case 'palace': return createPalace(gameId);
+    case 'lighthouse': return createCustomScenario(scenarioId, gameId, lighthouse);
+    default: throw new Error('找不到这个内置剧本。');
+  }
+}
 
 function morningAgenda(): ReadableDocument {
   return {
@@ -126,7 +142,8 @@ export function loadScenarioWorld(saved: unknown): WorldState {
     const visible = rule.objects.filter(name => room?.description.includes(name)).sort((a,b) => b.length-a.length);
     if (visible.length) rule.visibleSubject = {name:visible[0], aliases:visible.slice(1)};
   }
-  if (world.scenario !== "王宫疑云") return world;
+  if (world.scenario !== "王宫疑云" || (world.scenarioId && world.scenarioId !== 'palace')) return world;
+  world.scenarioId = 'palace';
   upgradePalaceLocations(world.locations);
   if (!Object.hasOwn(saved as object,"populationGroups")) {
     const defaults = palaceLocations();
@@ -256,7 +273,7 @@ export function createPalace(gameId: string): WorldState {
     }),
   ];
   return WorldStateSchema.parse({
-    id: gameId, scenario: "王宫疑云", version: 0, time: 480, characters, facts, queue,
+    id: gameId, scenario: "王宫疑云", scenarioId:'palace', version: 0, time: 480, characters, facts, queue,
     readables:[morningAgenda(), ...palaceDeliveries.flatMap(deliveredDocuments)],
     rules: {
       maxWait: 720, maxShort: 10,

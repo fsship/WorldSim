@@ -54,7 +54,7 @@ export function ConfigPanel({ initial, onSaved, setBusy }: { initial: PublicConf
   }
   return <form className="panel-form" onSubmit={save}>
     <label className="field">模拟引擎<select value={config.mode} onChange={e => update('mode', e.target.value as ProviderConfig['mode'])}><option value="mock">本地模拟（Mock）</option><option value="openai">OpenAI 兼容接口</option></select></label>
-    {config.mode === 'mock' ? <p className="form-note">本地模拟无需 API Key，适合体验「王宫疑云」和重复测试。</p> : <>
+    {config.mode === 'mock' ? <p className="form-note">本地模拟无需 API Key，可离线游玩。</p> : <>
       <label className="field">接口地址（Base URL）<input required type="url" value={config.baseUrl} onChange={e => update('baseUrl', e.target.value)}/></label>
       <label className="field">模型名称<input required value={config.model} onChange={e => update('model', e.target.value)}/></label>
       <label className="field">API Key<input autoComplete="new-password" type="password" placeholder={config.hasApiKey ? '已配置，留空保留原密钥' : '输入服务端密钥（可选）'} value={key} onChange={e => setKey(e.target.value)}/></label>

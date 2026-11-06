@@ -1,4 +1,4 @@
-import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig, LlmCallStatus, LlmCallDetail, LlmCallList } from '@worldsim/shared'
+import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig, LlmCallStatus, LlmCallDetail, LlmCallList, ScenarioDefinition, ScenarioSummary } from '@worldsim/shared'
 
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -23,9 +23,15 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
 }
 
 const gamePath = (id: string) => '/games/' + encodeURIComponent(id)
+const scenarioPath = (id: string) => '/scenarios/' + encodeURIComponent(id)
 export const api = {
+  scenarios: () => request<ScenarioSummary[]>('/scenarios'),
+  scenario: (id: string) => request<ScenarioDefinition>(scenarioPath(id)),
+  saveScenario: (definition: ScenarioDefinition, id?: string) => id
+    ? request<ScenarioSummary>(scenarioPath(id), 'PUT', definition)
+    : request<ScenarioSummary>('/scenarios', 'POST', definition),
   games: () => request<GameSummary[]>('/games'),
-  create: () => request<GameView>('/games', 'POST', {}),
+  create: (scenarioId: string) => request<GameView>('/games', 'POST', { scenarioId }),
   game: (id: string) => request<GameView>(gamePath(id)),
   retryOpening: (id: string) => request<GameView>(gamePath(id) + '/opening/retry', 'POST', { version: 0 }),
   retryDialogue: (id: string, version: number) => request<GameView>(gamePath(id) + '/dialogue/retry','POST',{version}),
@@ -60,10 +66,10 @@ const currentKey = 'worldsim.activeGame'
 export function rememberGame(id: string) {
   try { localStorage.setItem(currentKey, id) } catch { /* Play continues with browser storage disabled. */ }
 }
-export async function loadCurrent(): Promise<GameView> {
+export async function loadCurrent(): Promise<GameView | null> {
   const games = await api.games()
   let id: string | null = null
   try { id = localStorage.getItem(currentKey) } catch { /* SQLite holds the authoritative list. */ }
   const last = games.find(g => g.id === id) ?? games[0]
-  return last ? api.game(last.id) : api.create()
+  return last ? api.game(last.id) : null
 }

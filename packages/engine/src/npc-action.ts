@@ -34,11 +34,15 @@ const reviewedActs = new WeakMap<NpcActionChoice, ReviewedAct>();
 // The offline provider has no semantic reviewer. Keep its conservative
 // approximation separate from the path used by model-backed agents.
 function offlineSelfDescription(description: string, context: NpcActionContext): boolean {
-  if (/[:：<>【】{}]|^(?:你|您|我|他|她|玩家|国王|陛下|系统|旁白)/u.test(description) ||
+  // Apply the same player-agency check to the names and roles in this scenario.
+  const playerReferences = [context.player.name, context.player.role].sort((a,b) => b.length - a.length);
+  let withPlayerLabels = description;
+  for (const label of playerReferences) withPlayerLabels = withPlayerLabels.replaceAll(label, "玩家");
+  if (/[:：<>【】{}]|^(?:你|您|我|他|她|玩家|国王|陛下|系统|旁白)/u.test(withPlayerLabels) ||
       description.startsWith(context.npc.name)) return false;
   // Fail before remote review on conspicuous attempts to narrate someone else's
   // decision, issue dialogue, or use a free gesture to travel between locations.
-  if (/(?:迫使|让|命令|拖着|强迫|带领|抓住|推着|把|将|代替|替)(?:玩家|国王|陛下|你|您)|(?:国王|陛下|玩家|您|你)(?:随后|已经|于是|接着|决定|走进|前往)|(?:说道|喊道|问道|回答道)|执行.{0,8}命令/u.test(description)) return false;
+  if (/(?:迫使|让|命令|拖着|强迫|带领|抓住|推着|把|将|代替|替)(?:玩家|国王|陛下|你|您)|(?:国王|陛下|玩家|您|你)(?:随后|已经|于是|接着|决定|走进|前往)|(?:说道|喊道|问道|回答道)|执行.{0,8}命令/u.test(withPlayerLabels)) return false;
   return !context.exits.some(exit => description.includes(exit.name) &&
     /走向|走进|走到|前往|赶往|进入|移步|离开|来到|返回/u.test(description));
 }
@@ -117,7 +121,11 @@ export async function chooseNpcAction(world: WorldState, npc: Character, input: 
     const context = forAction(npcContext(world, actor, nearby ? input : "", nearby ? decision : offsite,
       nearby ? testimonyIds : [], trigger === "opening", currentSpeechEventId, speakingTo), speakingTo, "actor");
     const actorId = actor.id, roomId = room.id, time = world.time, version = world.version, eventCount = world.history.length;
-    const proposed = await provider.decideNpcAction(structuredClone(context));
+    // Only the actor's decision can use its authored motives. Reviews and replies
+    // keep the audience-scoped context so a motive cannot serve as public evidence.
+    const decisionContext = world.rules.useNpcGoals && actor.goals.length
+      ? {...context, personalGoals:actor.goals} : context;
+    const proposed = await provider.decideNpcAction(structuredClone(decisionContext));
     const proposal = npcActionProposalSchemaFor(context).parse(proposed);
     const choice: NpcActionChoice = {proposal, source:"provider"};
     if (proposal.kind === "act") {
@@ -188,7 +196,7 @@ export function commitNpcAction(world: WorldState, npc: Character, choice: NpcAc
   } else if (proposal.kind === "carryOutOrder") {
     if (source === "opening" || !canCarryOutOrder(world, actor, order)) return;
     changes.push(...order.changes);
-    text = actor.name + "应下王命，将命令传了出去。";
+    text = actor.name + "应下了" + king.name + "的命令，随即传达下去。";
   } else if (proposal.kind === "act") {
     text = actor.name + proposal.description + (/[。！？.!?…]$/u.test(proposal.description) ? "" : "。");
   } else {

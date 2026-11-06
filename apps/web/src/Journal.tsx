@@ -19,7 +19,7 @@ const entryStyle: Record<EntryKind, { label: string, icon: IconName }> = {
   world: { label: '世界叙事', icon: 'feather' },
   dialogue: { label: '人物对话', icon: 'dialog' },
   system: { label: '系统提示', icon: 'compass' },
-  action: { label: '你的行动', icon: 'crown' }
+  action: { label: '你的行动', icon: 'user' }
 }
 function Entry({ kind, text, speaker, time, hearing, children }: { kind: EntryKind, text: string, speaker?: string, time?: number, hearing?: PublicTurn['hearing'], children?: React.ReactNode }) {
   const { label, icon } = entryStyle[kind]

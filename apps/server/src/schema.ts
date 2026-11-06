@@ -1,5 +1,11 @@
 import { integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 import type { GameTurn, ProviderConfig, WorldState } from '@worldsim/shared';
+import type { ScenarioDefinition } from '@worldsim/scenarios';
+
+export const customScenarios = sqliteTable('custom_scenarios', {
+  id: text('id').primaryKey(),
+  definition: text('definition', { mode: 'json' }).$type<ScenarioDefinition>().notNull(),
+});
 
 export const games = sqliteTable('games', {
   id: text('id').primaryKey(),
@@ -91,4 +97,9 @@ CREATE TABLE llm_calls (
 );
 CREATE INDEX llm_calls_status_id ON llm_calls(status, id);
 PRAGMA user_version = 2;
+`;
+
+export const migration3 = `
+CREATE TABLE custom_scenarios (id TEXT PRIMARY KEY NOT NULL, definition TEXT NOT NULL);
+PRAGMA user_version = 3;
 `;

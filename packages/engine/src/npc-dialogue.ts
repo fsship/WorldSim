@@ -130,6 +130,8 @@ function permittedDraft(draft: DialogueDraft, context: DialogueContext, privateT
   // Distinguishing a question about the player's plans from narrating their
   // decision is the independent reviewer's playerAgency check.
   if (/^(?:玩家|旁白|系统|国王|NPC|player|system)\s*[:：]|<\/?[a-z][^>]*>/iu.test(draft.text)) return false;
+  const prefix = draft.text.match(/^([^:：]+?)\s*[:：]/u)?.[1];
+  if (prefix && [context.player.name, context.player.role, context.speaker.name, context.speaker.role].includes(prefix)) return false;
   const text = compact(draft.text);
   return !context.facts.some(f => !draft.factIds.includes(f.id) && text.includes(compact(f.text)));
 }

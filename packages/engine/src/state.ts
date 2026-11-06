@@ -59,7 +59,7 @@ export function projectWorld(world: WorldState): PublicState {
     review_unavailable:"开场答复的核验服务暂时没有返回有效结果。",
   };
   return {
-    id: world.id, title: world.scenario, time: world.time, version: world.version,
+    id: world.id, title: world.scenario, scenarioId: world.scenarioId, time: world.time, version: world.version,
     opening: opening.map(e => e.kind === "npc" && e.speaker ? e.speaker + "：「" + e.text + "」" : e.text).join("\n\n"),
     ...(failed ? {openingUsedFallback:true, openingRetryable,
       openingNotice:failed.npcFailure ? notices[failed.npcFailure] : "这段开场使用了备用回复。"} : {}),
@@ -67,6 +67,7 @@ export function projectWorld(world: WorldState): PublicState {
     exits: world.locations.filter(l => location.exits.includes(l.id)).map(l => ({id: l.id, name: l.name})),
     present: present(world, king).map(c => ({id: c.id, name: c.name, role: c.role})),
     player: { id: king.id, name: king.name, role: king.role, condition: {healthy:"安康", detained:"被拘押", dead:"死亡"}[king.condition],
+      ...(king.goals.length ? {goal:king.goals.join("；")} : {}),
       items: carriedItems(world, king).map(({id, name, description}) => ({id, name, description})) },
     facts: knownFacts(world, king).map(f => ({id: f.id, text: f.content.text})),
   };

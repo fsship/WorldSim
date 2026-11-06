@@ -5,15 +5,16 @@ import Fastify, { LogController } from 'fastify';
 import staticFiles from '@fastify/static';
 import { z } from 'zod';
 import { prepareOpening, projectWorld, replyRecovery, retryDialogue, retryOpening, runTurn } from '@worldsim/engine';
-import { createPalace } from '@worldsim/scenarios';
 import { createProvider, ProviderFailure } from '@worldsim/llm';
 import { llmTaskLabels, ProviderConfigSchema, TurnRequestSchema, type GameView, type ProviderConfig } from '@worldsim/shared';
 import { assertPrivateDatabase, envConfig, publicConfig, updateConfig } from './config';
 import { ApiError, versionConflict } from './errors';
 import { GameStore, type Command } from './store';
+import { createScenarioWorld, registerScenarioRoutes } from './scenarios';
 
 const snapshotInput = TurnRequestSchema.pick({ version: true });
 const emptyInput = z.object({}).strict();
+const newGameInput = z.object({ scenarioId: z.string().min(1).max(160).default('palace') }).strict();
 const openingInput = z.object({version:z.literal(0)}).strict();
 const callListQuery = z.object({
   q: z.string().trim().max(200).optional(),
@@ -97,10 +98,11 @@ export function buildApp(options: Options) {
   app.get('/api/llm-calls', async req => store.listLlmCalls(callListQuery.parse(req.query)));
   app.get('/api/llm-calls/:id', async req => store.llmCall(callIdParam.parse(req.params).id));
 
+  registerScenarioRoutes(app, store);
   app.get('/api/games', async () => store.list());
   app.post('/api/games', async req => {
-    emptyInput.parse(req.body);
-    const world = createPalace(randomUUID());
+    const { scenarioId } = newGameInput.parse(req.body);
+    const world = createScenarioWorld(store, scenarioId, randomUUID());
     return store.create(await prepareOpening(world, providerFor(world.id, world.version)));
   });
   app.get<{ Params: { id: string } }>('/api/games/:id', async req => store.view(req.params.id));

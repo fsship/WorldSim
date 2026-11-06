@@ -76,7 +76,7 @@ function meetAddressedGroup(world:WorldState, ref:ParseReferent) {
   if (king.condition !== "healthy" || king.journey) return;
   const group = groupForContact(world,ref.id,king.locationId);
   if (!group) return;
-  record(world,{source:"introduction",kind:"system",text:"国王向" + group.name + "中的一人搭话。",
+  record(world,{source:"introduction",kind:"system",text:king.name + "向" + group.name + "中的一人搭话。",
     locationId:king.locationId,perception:"private",recipients:[],
     changes:[{op:"meet",group:group.id,locationId:king.locationId}]});
 }

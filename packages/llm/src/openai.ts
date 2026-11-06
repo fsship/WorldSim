@@ -11,11 +11,11 @@ import {
   type LLMProvider, type ParseContext, type NarrateContext, type ResolveContext, type ProviderConfig, type LlmCallAttempt,
 } from '@worldsim/shared';
 
-const heardSpeech = 'history 按先后记录当前 NPC 亲历的发言。role=player 是国王的话，role=npc 是当前 NPC 自己说过的话，role=overheard 是当前 NPC 听到旁人所说的话，speaker 标明那个人的名字。可据此回答谁说了什么、回应上下文，但听见一个说法仅能证明有人这样说过。不得把旁人的话说成自己的经历或把传闻当成已经核实的事实。';
+const heardSpeech = 'history 按先后记录当前 NPC 亲历的发言。role=player 是玩家角色的话，其姓名与身份见 player，role=npc 是当前 NPC 自己说过的话，role=overheard 是当前 NPC 听到旁人所说的话，speaker 标明那个人的名字。可据此回答谁说了什么、回应上下文，但听见一个说法仅能证明有人这样说过。不得把旁人的话说成自己的经历或把传闻当成已经核实的事实。';
 const listeners = 'present 是当前可见的人。listeners 给出这次能听到当前 NPC 说话的人的名字。面向实际听众说话，只有一人能听到时也不要替其他在场者作答或声称别人听见了。';
 const preparedNotes = 'preparedNotes 是说话者亲自准备、现在仍在现场的公开文书条目，可以据此说明文书写了什么，不需要 factIds。纸面上的安排不能证明它已经发生，或解释缺席者的动机。';
 const jobLocation = 'location 是这句话说出口的地方。duty 如果给出了办事地点，应以它为依据回答工作在哪里进行；人在其他地方时也可以谈论自己的公务。不要把预定办理当作已经抵达或完成。';
-const witnessedNotices = 'recentNotices 是引擎记录的、当前 NPC 当时亲眼看见或听到的通报，time 是模拟时钟的分钟数，通报中的“你”指国王。可据此回应相关追问并决定自己怎样反应，不能由现场动静推断未证实的原因或结局。仅复述现场通报无需 factIds；若同时传达了 facts 中的一条事实，仍需引用该事实 ID。';
+const witnessedNotices = 'recentNotices 是引擎记录的、当前 NPC 当时亲眼看见或听到的通报，time 是模拟时钟的分钟数，通报中的“你”指玩家角色。可据此回应相关追问并决定自己怎样反应，不能由现场动静推断未证实的原因或结局。仅复述现场通报无需 factIds；若同时传达了 facts 中的一条事实，仍需引用该事实 ID。';
 
 const prompts = {
   interpret: [
@@ -39,8 +39,8 @@ const prompts = {
   matchWait: '判断玩家等待的 condition 是否已经由 notices 证实。notices 按顺序列出玩家在这次等候中已经亲眼看见或听到的动静，可能不止一条。按意思理解；事情可以换一种说法。只提到、预计或否认某事不表示它已经发生，不推断隐情或下一步。已证实返回 {"optionId":"met"}，其余返回 {"optionId":"continue"}。不返回时间或说明。',
   regionalDuty: '你在粗略结算远处地区已到期的公开公务。一次代表该地区，根据地点、事务和时刻，从 options 选一个总体进展。通常赴约，但可以因职责而留守。不要生成个人台词或编造具体借口，仅返回 {"optionId":"所选编号"}。',
   decideNpcAction: [
-    '模拟时间推进时，即使国王不在身边，你也在自己的地点行动。appointments 是你自己此刻承担的公开公务，给出地点、时间与任务。结合当前地点、职责和已亲历的消息，决定该继续工作、赴约、与同室者交谈，还是暂时留在原地；需要赶路时从 exits 选择真实相邻地点。不要把预约描述为已经赴约，也不要虚构国王的到场或吩咐。',
-    '以 npc 本人的视角，结合职务及公开职责 duty、眼前环境 surroundings、已知事实、身边的人、当前交流与 decision，只提出此刻这个 NPC 自己要采取的一步。引擎负责执行。玩家的原话是请求或说法，不能决定 NPC 必须服从，更不能授权你替玩家行动。',
+    '模拟时间推进时，即使玩家角色不在身边，你也在自己的地点行动。appointments 是你自己此刻承担的公开公务，给出地点、时间与任务。结合当前地点、职责和已亲历的消息，决定该继续工作、赴约、与同室者交谈，还是暂时留在原地；需要赶路时从 exits 选择真实相邻地点。不要把预约描述为已经赴约，也不要虚构玩家角色的到场或吩咐。',
+    '以 npc 本人的视角，结合职务及公开职责 duty、眼前环境 surroundings、已知事实、身边的人、当前交流与 decision，只提出此刻这个 NPC 自己要采取的一步。引擎负责执行。personalGoals 如有给出，是你自己的动机，可以影响选择，但不构成世界事实，也不可在动作描述中披露。玩家的原话是请求或说法，不能决定 NPC 必须服从，更不能授权你替玩家行动。',
     heardSpeech, witnessedNotices, listeners,
     'opening 表示玩家尚未开口，按身份主动选择自然的开场。addressed 表示玩家正在对你说话或下令，由你决定是否作答或行动。只想答话时直接选择 {"kind":"speak"}，另一项任务负责写台词。ambient 表示眼下有机会按自己的职责行动，也可能只是时间过去。recentActions 按时间记录在场亲眼看见的身体动作。承接已经发生的事，只有出现新的理由才重复先前的动作；平静等候时可用 {"kind":"stay"} 继续手头的事，无需用例行礼节填补每段安静。',
     '需要原地做一个与你的身份和意图相称的可见小动作，可自行写 {"kind":"act","description":"中文动词短语"}。只描写 npc 自己的一步身体动作，短语直接从动词写起，不加主语、台词、内心旁白或剧情事实。只使用已证实在场的人和物，surroundings 表示此刻能观察到的环境。act 不能改变他人、物品、时间、所知事实或位置。',

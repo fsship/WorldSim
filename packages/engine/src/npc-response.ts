@@ -38,7 +38,7 @@ export async function npcResponse(world: WorldState, npc: Character, input: stri
   const listeners = withinEarshot(world, npc, replyTo);
   const heard = utterance(world,npc,listeners,quiet);
   if (willSpeak && (hereWithKing || (trigger === "ambient" && (listeners.length > 0 || heard.groups?.length)))) {
-    const speakingScene = hereWithKing ? decision : (witnessedScene ?? "") + "你与同处一室的人交谈，国王不在场。";
+    const speakingScene = hereWithKing ? decision : (witnessedScene ?? "") + "你与同处一室的人交谈，" + king.name + "不在场。";
     const outcome = physical ? physical.text + (proposal.kind === "carryOutOrder" && order ? order.summary + "该命令已经执行。" : "") : speakingScene;
     const reply = await writeNpcReply(world, npc, hereWithKing ? input : "", outcome, hereWithKing ? testimonyIds : [], provider, trigger === "opening",
       speechEventId, disclosureAudience(heard));
@@ -115,7 +115,7 @@ function ambientScene(world: WorldState, actor: Character, events: readonly Worl
     // The text of a player's private observation is withheld, even if an NPC
     // in that room can independently see the king enter or a guard detain someone.
     else if (event.changes.some(c => c.op === "move" && c.actor === king.id && c.to === actor.locationId)) {
-      witnessed.push("国王刚刚来到这里。");
+      witnessed.push(king.name + "刚刚来到这里。");
     } else if (event.locationId === actor.locationId && event.changes.some(c => c.op === "detain")) {
       witnessed.push("这里刚发生了一次拘押。");
     }
@@ -123,7 +123,7 @@ function ambientScene(world: WorldState, actor: Character, events: readonly Worl
   // The bystanders can see the king remain in place; the private reason for waiting stays with the player.
   const observedWait = Math.min(waited ?? 0, world.time - (lastArrival?.time ?? 0));
   if (observedWait > 0 && inLocation(king,actor.locationId))
-    witnessed.push("国王仍在原处，已经过了" + observedWait + "分钟。");
+    witnessed.push(king.name + "仍在原处，已经过了" + observedWait + "分钟。");
   const scene = witnessed.length ? "你在场看见或听到：" + witnessed.slice(-2).join(" ").slice(0, 300) :
     "这段时间没有新的现场动静引起你的注意。";
   return scene + "你可自行决定下一步行动。";
@@ -202,7 +202,7 @@ export async function prepareOpening(initial: WorldState, provider: LLMProvider)
   if (!seed) return world;
   const npc = openingActor(world, seed);
   world.history = world.history.filter(e => e !== seed);
-  if (npc) await npcResponse(world, npc, "", "国王刚到议事厅，尚未开口，请自行决定此刻做什么。",
+  if (npc) await npcResponse(world, npc, "", player(world).name + "在场，尚未开口，请自行决定此刻做什么。",
     [], provider, "opening");
   return world;
 }
@@ -216,6 +216,6 @@ export async function retryOpening(initial: WorldState, provider: LLMProvider): 
   const npc = openingActor(world, failed);
   if (!npc) return initial;
   world.history = world.history.filter(e => e !== failed);
-  await npcResponse(world, npc, "", "国王在场，尚未发言。请自行决定如何开启这一幕。", [], provider, "opening");
+  await npcResponse(world, npc, "", player(world).name + "在场，尚未发言。请自行决定如何开启这一幕。", [], provider, "opening");
   return world;
 }

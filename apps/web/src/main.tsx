@@ -24,7 +24,7 @@ function WorldSim() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   useEffect(() => {
-    document.title = page === '/llm-calls' ? '模型调用记录 · WorldSim' : 'WorldSim · 王宫疑云'
+    document.title = page === '/llm-calls' ? '模型调用记录 · WorldSim' : 'WorldSim · 世界剧场'
   }, [page])
   function navigate(next: PagePath) {
     if (page !== next) window.history.pushState(null, '', next)

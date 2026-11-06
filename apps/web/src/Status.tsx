@@ -16,10 +16,11 @@ export function Status({ state }: { state: PublicState }) {
     </section>
     <section className="status-section">
       <Heading name="user" label="玩家角色"/>
-      <div className="identity"><div className="identity-icon"><Icon name="crown" size={24}/></div>
+      <div className="identity"><div className="identity-icon"><Icon name={state.scenarioId === 'palace' ? 'crown' : 'user'} size={24}/></div>
         <div><p className="identity-name">{state.player.name}</p>{state.player.role !== state.player.name && <span className="identity-role">{state.player.role}</span>}</div>
         <span className="condition"><i/>{conditionText[state.player.condition] ?? state.player.condition}</span>
       </div>
+      {state.player.goal && <p className="player-goal">目标 · {state.player.goal}</p>}
     </section>
     <section className="status-section">
       <Heading name="pin" label="当前位置"/>
