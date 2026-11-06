@@ -2,6 +2,9 @@
   "name": "@worldsim/shared",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./llm-calls": "./src/llm-calls.ts"
+  },
   "dependencies": { "zod": "^3.25.76" }
 }

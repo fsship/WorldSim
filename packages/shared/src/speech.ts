@@ -2,6 +2,27 @@ const closingQuote: Record<string, string> = {
   '“': '”', '‘': '’', '「': '」', '『': '』', '"': '"', "'": "'",
 };
 
+export interface QuoteSpan { start:number; end:number; text:string }
+
+/** Complete outer quotations, with half-open offsets into the original input. */
+export function quoteSpans(input: string): QuoteSpan[] {
+  const spans: QuoteSpan[] = [];
+  const stack: string[] = [];
+  let start = 0;
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    if ((c === "'" || c === '’') && /[a-z]/iu.test(input[i - 1] ?? '') && /[a-z]/iu.test(input[i + 1] ?? '')) continue;
+    if (stack.length && c === stack[stack.length - 1]) {
+      stack.pop();
+      if (!stack.length) spans.push({start, end:i + 1, text:input.slice(start + 1, i)});
+    } else if (closingQuote[c]) {
+      if (!stack.length) start = i;
+      stack.push(closingQuote[c]);
+    } else if (/[”’」』]/u.test(c)) return [];
+  }
+  return stack.length ? [] : spans;
+}
+
 export interface DialogueLine {
   text: string;
   addressee?: string;
@@ -28,24 +49,34 @@ const deliveryVerb = /耳语|低语|回答|答复|回复|回应|询问|追问|�
 /** Examine the player's delivery, never a description of a whisper in the spoken words. */
 export function isPrivateSpeech(input: string): boolean {
   const raw = input.trim();
-  const opening = raw.search(/[“‘「『"']/u);
+  const spans = quoteSpans(raw);
+  if (spans.length > 1) {
+    return outsideClauses(raw, spans).some((clause, i) => {
+      const speaker = attribution(clause, '', i === 0, []);
+      return !!speaker && privateAttribution(clause, true, speaker.addressee);
+    });
+  }
+  const opening = spans[0]?.start ?? raw.search(/[“‘「『"']/u);
   let delivery = raw.split(/[：:，,。！？?!]/u, 1)[0];
   if (opening >= 0) {
-    const end = raw.indexOf(closingQuote[raw[opening]], opening + 1);
-    delivery = opening > 0 ? raw.slice(0, opening) : end >= 0 ? raw.slice(end + 1) : "";
+    delivery = opening > 0 ? raw.slice(0, opening) : spans[0] ? raw.slice(spans[0].end) : "";
   }
+  let addressee: string | undefined;
   if (opening >= 0 || delivery.length < raw.length) {
     delivery = delivery.trim().replace(/^(?:[，,]\s*)?(?:—+|--+)?\s*|[：:，,。！？?!.]+$/gu, "").trim();
     // A title like 顾问 or 传令官 can itself contain a reporting verb.
-    const addressee = attribution(delivery, "", opening !== 0, [])?.addressee;
-    if (addressee) delivery = delivery.replace(addressee, "");
+    addressee = attribution(delivery, "", opening !== 0, [])?.addressee;
   }
+  return privateAttribution(delivery, opening >= 0 || /[：:]/u.test(raw), addressee);
+}
+
+function privateAttribution(delivery: string, attributed: boolean, addressee?: string) {
+  if (addressee) delivery = delivery.replace(addressee, '');
   // Stop at the first actual speech verb, even for unquoted "我说要私下告诉艾琳".
   const verb = deliveryVerb.exec(delivery);
   if (!verb) return false;
   const manner = delivery.slice(0, verb.index).trim().replace(/^[，,]?\s*我\s*/u, "");
   if (exclusive.test(manner + verb[0])) return true;
-  const attributed = opening >= 0 || /[：:]/u.test(raw);
   if (!attributed && manner && !/^(?:向|对|跟|凑近|贴近|靠近|凑到|在)/u.test(manner) &&
       !initialQuietManner.test(manner) && !tonePhrase.test(manner)) return false;
   return verb[0] === "耳语" || verb[0] === "低语" || quietManner.test(manner) || /耳边|耳畔|(?:压低|极小|很小|微弱)的?(?:声音|嗓音)/u.test(manner);
@@ -135,20 +166,65 @@ function unquotedWhisper(raw: string, people: readonly string[]): DialogueLine |
   if (text) return { text, addressee:name };
 }
 
-/** Player dialogue has one complete quotation and at most one first-person attribution. */
+function observationBeat(clause: string, people: readonly string[]): boolean {
+  if (/^我(?:顿了顿|停顿了一下|点了点头|摇了摇头|抬起头|环顾四周)$/u.test(clause)) return true;
+  const target = /^我(?:审视|扫视|环视|打量|看向|望向|环顾)(?:着|了)?(.+)$/u.exec(clause)?.[1];
+  return !!target && (people.includes(target) ||
+    /^(?:(?:在场|眼前|面前)的?)?(?:诸多|诸位|所有|每一位)?(?:人物|众人|人群|官员|大臣|宾客|四周|人)$/u.test(target));
+}
+
+function outsideClauses(raw: string, spans: QuoteSpan[]): string[] {
+  const boundaries = [0, ...spans.map(span => span.end)];
+  return boundaries.map((start, i) => raw.slice(start, spans[i]?.start ?? raw.length)
+    .replace(/^[，,。.!！?？：:—\s-]+|[，,。.!！?？：:—\s-]+$/gu, ''));
+}
+
+function segmentedDialogue(raw: string, spans: QuoteSpan[], people: readonly string[]): DialogueLine | undefined {
+  if (spans.length < 2 || spans.some(span => !span.text.trim())) return;
+  let grounded = false, addressee: string | undefined, quiet: boolean | undefined;
+  for (const [i, clause] of outsideClauses(raw, spans).entries()) {
+    if (!clause) continue;
+    if (i > 0 && i < spans.length && observationBeat(clause, people)) { grounded = true; continue; }
+    if (/转述|复述|引述|假装|假设|如果|想象|模仿/u.test(clause)) return;
+    const speaker = attribution(clause, '', i === 0, people);
+    if (!speaker) return;
+    if (speaker.addressee && addressee && speaker.addressee !== addressee) return;
+    addressee ??= speaker.addressee;
+    const delivery = privateAttribution(clause, true, speaker.addressee);
+    if (quiet !== undefined && delivery !== quiet) return;
+    quiet = delivery;
+    grounded = true;
+  }
+  if (!grounded) return;
+  // A vocative can redirect a later clause even without another attribution.
+  const namedListeners = new Set(spans.flatMap(span => people.filter(person => {
+    const words = span.text.trimStart();
+    return words.startsWith(person) && /^[，,]/u.test(words.slice(person.length));
+  })));
+  if (addressee) namedListeners.add(addressee);
+  if (namedListeners.size > 1) return;
+  const text = spans.map(span => span.text.trim()).join('\n');
+  return addressee ? {text, addressee} : {text};
+}
+
+/** Resolve one player's speech interrupted by attribution or an incidental gesture. */
+export function readSegmentedSpeech(input: string, people: readonly string[] = []): DialogueLine | undefined {
+  return segmentedDialogue(input, quoteSpans(input), people);
+}
+
 export function readQuotedSpeech(input: string, people: readonly string[] = []): DialogueLine | undefined {
   const raw = input.trim();
-  const opening = raw.search(/[“‘「『"']/u);
-  if (opening < 0) return;
-  const end = raw.indexOf(closingQuote[raw[opening]], opening + 1);
-  if (end < 0) return;
-  const text = raw.slice(opening + 1, end).trim();
+  const spans = quoteSpans(raw);
+  if (spans.length > 1) return segmentedDialogue(raw, spans, people);
+  const span = spans[0];
+  if (!span) return;
+  const text = span.text.trim();
   if (!text) return;
 
-  const after = raw.slice(end + 1).trim().replace(/[。.!！?？]+$/u, '').trim();
-  if (opening > 0) {
+  const after = raw.slice(span.end).trim().replace(/[。.!！?？]+$/u, '').trim();
+  if (span.start > 0) {
     if (after) return;
-    const before = raw.slice(0, opening).trim().replace(/[：:，,]$/u, '').trim();
+    const before = raw.slice(0, span.start).trim().replace(/[：:，,]$/u, '').trim();
     return attribution(before, text, true, people);
   }
   const speaker = after.replace(/^(?:[，,]\s*)?(?:—+|--+)?\s*/u, '');
@@ -159,13 +235,11 @@ export function readQuotedSpeech(input: string, people: readonly string[] = []):
  * words belongs to the speaker, not to a second player action. */
 export function* quotedFollowUps(input: string, people: readonly string[]) {
   const raw = input.trim();
-  const opening = raw.search(/[“‘「『"']/u);
-  if (opening < 0) return;
-  const end = raw.indexOf(closingQuote[raw[opening]], opening + 1);
-  if (end < 0) return;
-  const remainder = raw.slice(end + 1);
+  const last = quoteSpans(raw).at(-1);
+  if (!last) return;
+  const remainder = raw.slice(last.end);
   for (const boundary of remainder.matchAll(/[，,；;。]|(?:随后|然后|同时|顺手|顺便)/gu)) {
-    const split = end + 1 + boundary.index;
+    const split = last.end + boundary.index;
     const speechInput = raw.slice(0, split).trim();
     const dialogue = readQuotedSpeech(speechInput, people);
     if (!dialogue) continue;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { quoteSpans, readSegmentedSpeech } from './speech';
 
 const nonempty = z.string().min(1);
 const minute = z.number().int().safe().nonnegative();
@@ -104,6 +105,12 @@ const readSelection = z.object({
   resume: z.boolean().optional(), nextOnly: z.boolean().optional(),
 }).strict();
 
+export function spokenPlanWords(words: string | string[]): string {
+  return Array.isArray(words) ? words.join('\n') : words;
+}
+const spokenWords = z.union([ActionTextSchema, z.array(ActionTextSchema).min(1)
+  .refine(parts => ActionTextSchema.safeParse(spokenPlanWords(parts)).success, '发言过长')]);
+
 // The interpreter selects an operation and its arguments. No variant can carry
 // effects, set a result, or author observable prose on behalf of the engine.
 export const TurnPlanSchema = z.discriminatedUnion('kind', [
@@ -116,7 +123,7 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('investigate'), focus:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('read'), reading:readSelection}).strict(),
   z.object({
-    kind:z.literal('speak'), words:ActionTextSchema, targetId:referenceText.optional(),
+    kind:z.literal('speak'), words:spokenWords, targetId:referenceText.optional(), source:ActionTextSchema.optional(),
     private:z.boolean(), courteous:z.boolean().optional(), reading:readSelection.optional(),
     targetUnavailable:z.boolean().optional(),
   }).strict(),
@@ -139,6 +146,27 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   }
 });
 export type TurnPlan = z.infer<typeof TurnPlanSchema>;
+
+function verifiedSpeech(context: ParseContext, words: string | string[]): string | string[] | undefined {
+  const quotes = quoteSpans(context.text).map(span => span.text.trim());
+  const oneSpeaker = quotes.length > 1 && readSegmentedSpeech(context.text, context.people);
+  if (typeof words === 'string') {
+    if (quotes.length < 2) return context.text.includes(words) ? words : undefined;
+    // Older plans may select just one line, or join the lines into a single string.
+    // Complete them only when the input clearly attributes every quote to the player.
+    if (quotes.includes(words)) return oneSpeaker ? quotes : words;
+    if (oneSpeaker && (words === quotes.join('') || words === quotes.join('\n') || words === quotes.join(' '))) return quotes;
+    return;
+  }
+  let after = 0;
+  for (const part of words) {
+    const at = quotes.indexOf(part, after);
+    if (at === -1) return;
+    after = at + 1;
+  }
+  return oneSpeaker ? quotes : words;
+}
+
 function unquotedRanges(text: string): [number, number][] {
   const closing: Record<string, string> = {'“':'”', '‘':'’', '「':'」', '『':'』', '"':'"', "'":"'"};
   const parts: [number, number][] = [];
@@ -170,19 +198,28 @@ export function turnPlanSchemaFor(context: ParseContext) {
     }
     return false;
   };
-  return TurnPlanSchema.superRefine((plan, ctx) => {
-    if ((plan.kind === 'speak' || plan.kind === 'order') && !context.text.includes(plan.words)) {
-      ctx.addIssue({code:'custom',message:'发言、指令必须引用玩家的原话'});
+  return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
+    if (plan.kind === 'speak') {
+      const words = verifiedSpeech(context, plan.words);
+      if (words === undefined) ctx.addIssue({code:'custom',path:['words'],message:'发言必须按原序引用玩家的原话'});
+      else plan = {...plan, words};
+      const beat = plan.source;
+      if (beat && (!/[\p{L}\p{N}]/u.test(beat) || !outside.some(([start,end]) => context.text.slice(start,end).includes(beat))))
+        ctx.addIssue({code:'custom',path:['source'],message:'发言的动作描写必须完整引用引语外的原文'});
+    }
+    if (plan.kind === 'order' && !context.text.includes(plan.words)) {
+      ctx.addIssue({code:'custom',path:['words'],message:'指令必须引用玩家的原话'});
     }
     if (plan.kind === 'clarify' || plan.kind === 'assert' || plan.kind === 'unavailable' || plan.kind === 'order' ||
-        (plan.kind === 'speak' && !plan.reading)) return;
+        (plan.kind === 'speak' && !plan.reading)) return plan;
     const source = plan.kind === 'read' || plan.kind === 'speak' ? plan.reading?.source : plan.source;
     if (source ? !containsActionSource(source) : outside.length > 1) {
       ctx.addIssue({code:'custom',message:'含引语的行动必须引用引语之外的动作原文'});
     }
-    if (source && plan.kind === 'speak' && plan.words.includes(source)) {
+    if (source && plan.kind === 'speak' && spokenPlanWords(plan.words).includes(source)) {
       ctx.addIssue({code:'custom',message:'默读的动作原文不能是向旁人说出的台词'});
     }
+    return plan;
   });
 }
 

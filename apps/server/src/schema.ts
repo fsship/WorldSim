@@ -36,6 +36,27 @@ export const settings = sqliteTable('provider_settings', {
   config: text('config', { mode: 'json' }).$type<ProviderConfig>().notNull(),
 });
 
+export const llmCalls = sqliteTable('llm_calls', {
+  id: integer('id').primaryKey(),
+  callId: text('call_id').notNull(),
+  gameId: text('game_id'),
+  turnVersion: integer('turn_version'),
+  startedAt: text('started_at').notNull(),
+  task: text('task').notNull(),
+  model: text('model').notNull(),
+  attempt: integer('attempt').notNull(),
+  status: text('status', { enum: ['success', 'error'] }).notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  httpStatus: integer('http_status'),
+  errorReason: text('error_reason'),
+  promptTokens: integer('prompt_tokens'),
+  completionTokens: integer('completion_tokens'),
+  totalTokens: integer('total_tokens'),
+  requestBody: text('request_body').notNull(),
+  responseBody: text('response_body'),
+  responseTruncated: integer('response_truncated', { mode: 'boolean' }).notNull(),
+});
+
 // Migration 1. Only the server creates these tables. World text and model proposals
 // enter the database as bound values through Drizzle.
 export const migration1 = `
@@ -56,4 +77,18 @@ CREATE TABLE snapshots (
 CREATE INDEX snapshots_game ON snapshots(game_id, created_at);
 CREATE TABLE provider_settings (id INTEGER PRIMARY KEY CHECK (id = 1), config TEXT NOT NULL);
 PRAGMA user_version = 1;
+`;
+
+// Opening calls can precede game creation, and a failed turn may never be committed.
+export const migration2 = `
+CREATE TABLE llm_calls (
+  id INTEGER PRIMARY KEY, call_id TEXT NOT NULL, game_id TEXT, turn_version INTEGER,
+  started_at TEXT NOT NULL, task TEXT NOT NULL, model TEXT NOT NULL, attempt INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('success', 'error')), duration_ms INTEGER NOT NULL,
+  http_status INTEGER, error_reason TEXT, prompt_tokens INTEGER, completion_tokens INTEGER,
+  total_tokens INTEGER, request_body TEXT NOT NULL, response_body TEXT, response_truncated INTEGER NOT NULL,
+  UNIQUE (call_id, attempt)
+);
+CREATE INDEX llm_calls_status_id ON llm_calls(status, id);
+PRAGMA user_version = 2;
 `;

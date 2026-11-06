@@ -1,5 +1,5 @@
 import {
-  ActionIntentSchema, inspectableItems, readablesAt, readPlayerInput, roomDescription, turnPlanSchemaFor,
+  ActionIntentSchema, inspectableItems, readablesAt, readPlayerInput, roomDescription, spokenPlanWords, turnPlanSchemaFor,
   type ActionIntent, type Character, type LLMProvider, type ParseContext, type ParseReferent,
   type PlayerInput, type TurnPlan, type WorldState,
 } from "@worldsim/shared";
@@ -126,12 +126,13 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: TurnPlan
     }
     case "read": return run({kind:"investigate",target:plan.reading.documentId}, {reading:readSelection(plan.reading)});
     case "speak": {
+      const words = spokenPlanWords(plan.words);
       const who = plan.targetId ? offered("npc",plan.targetId) ?? offered("crowd",plan.targetId) : undefined;
       if (who?.kind === "crowd" && !plan.targetUnavailable) meetAddressedGroup(world,who);
-      return run({kind:"speak",target:who?.name}, {dialogue:{text:plan.words, addressee:who?.name},
+      return run({kind:"speak",target:who?.name}, {dialogue:{text:words, addressee:who?.name},
         reading:plan.reading ? readSelection(plan.reading) : undefined},
         {speech:{private:plan.private, courteous:plan.courteous ?? false, targetId:who?.id,
-          targetUnavailable:plan.targetUnavailable || (!!plan.targetId && !who)}}, plan.words);
+          targetUnavailable:plan.targetUnavailable || (!!plan.targetId && !who)}}, words);
     }
     case "order": {
       const intent: ActionIntent = {kind:"order",target:plan.targetId};

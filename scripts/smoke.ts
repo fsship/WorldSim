@@ -8,10 +8,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildApp } from '../apps/server/src/app';
 import { GameViewSchema, SnapshotSummarySchema } from '../packages/shared/src/contracts';
+import type { LlmCallList, LlmCallDetail } from '../packages/shared/src/llm-calls';
 
 // Full loopback integration without vendor credentials. Use the production
 // provider and HTTP endpoints, with a local stand-in for Chat Completions.
 const seen = new Set<string>();
+let requests = 0;
+let rejectNext = false;
 const fixtureLine = '今早的议程里有一场晨会，会场在议事厅。';
 const upstream = createServer(async (req, res) => {
   try {
@@ -19,6 +22,11 @@ const upstream = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer loopback-fixture');
     let raw = '';
     for await (const part of req) raw += part;
+    requests++;
+    if (rejectNext) {
+      res.writeHead(503).end('upstream unavailable');
+      return;
+    }
     const request = JSON.parse(raw);
     const input = JSON.parse(request.messages[1].content);
     let reply;
@@ -61,6 +69,7 @@ const upstream = createServer(async (req, res) => {
     }
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
       choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(reply) } }],
+      usage: { prompt_tokens: 32, completion_tokens: 16, total_tokens: 48 },
     }));
   } catch {
     res.writeHead(400).end();
@@ -115,7 +124,36 @@ try {
   assert.ok(inspect.turns[2].narrative.includes('印面'));
   assert.ok(two.turns[1].observations.some(o => o.text.includes('将双手交叠在身前')));
   assert.deepEqual(seen, new Set(['interpret', 'resolve', 'npc-action', 'offscreen-decision', 'review-npc-action', 'dialogue', 'review', 'narrate']));
-  console.log('通过：生产网页、NPC 行动与对白、幂等、快照分支、移动途中异地 NPC 决策。');
+  const logUrl = base + '/api/llm-calls';
+  const logs = async (params: Record<string, string> = {}): Promise<LlmCallList> => {
+    const response = await fetch(logUrl + '?' + new URLSearchParams(params));
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.equal((await logs()).total, requests);
+  const matching = await logs({ q: first.input, status: 'success' });
+  const interpret = matching.items.find(item => item.task === 'interpret' && item.gameId === initial.state.id && item.turnVersion === 1);
+  assert.ok(interpret && !('requestBody' in interpret));
+  const detail: LlmCallDetail = await (await fetch(logUrl + '/' + interpret.id)).json();
+  assert.equal(JSON.parse(detail.requestBody).messages[0].role, 'system');
+  assert.equal(JSON.parse(detail.responseBody!).choices[0].finish_reason, 'stop');
+  assert.equal(detail.totalTokens, 48);
+  assert.ok(!JSON.stringify(detail).includes('loopback-fixture'));
+  const recordsPage = await fetch(base + '/llm-calls', { headers: { accept: 'text/html' } });
+  assert.equal(recordsPage.status, 200);
+  assert.match(await recordsPage.text(), /<script[^>]+src="\/assets\//);
+
+  rejectNext = true;
+  const failed = await fetch(base + path + '/turns', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'smoke-failure', version: 3, input: '我环顾四周。' }) });
+  assert.equal(failed.status, 502);
+  const errors = await logs({ q: 'upstream unavailable', status: 'error' });
+  assert.equal(errors.total, 1);
+  assert.equal(errors.items[0].httpStatus, 503);
+  assert.equal(errors.items[0].turnVersion, 4);
+  assert.deepEqual(await (await fetch(base + path)).json(), inspect);
+  assert.equal((await logs()).total, requests);
+  console.log('通过：生产网页、NPC 行动与对白、幂等、快照分支、异地 NPC 决策、成功与失败的模型调用检索。');
 } finally {
   await app.close();
   await new Promise<void>(resolve => upstream.close(() => resolve()));

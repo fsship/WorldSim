@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { createProvider, MockLLMProvider } from '@worldsim/llm';
+import { createProvider, MockLLMProvider, OpenAICompatibleProvider } from '@worldsim/llm';
 import { GameViewSchema, type GameView, type PublicConfig } from '@worldsim/shared';
 import { buildApp } from '../src/app';
 
@@ -32,6 +32,10 @@ async function create(app: FastifyInstance): Promise<GameView> {
 }
 function action(app: FastifyInstance, id: string, requestId: string, version = 0, input = '观察周围') {
   return app.inject({ method: 'POST', url: `/api/games/${id}/turns`, payload: { requestId, version, input } });
+}
+
+function completion(plan: unknown) {
+  return Response.json({choices:[{finish_reason:'stop', message:{content:JSON.stringify(plan)}}]});
 }
 
 function deferred() {
@@ -118,9 +122,31 @@ describe('SQLite 游戏事务与 HTTP 边界', () => {
     const initial = await create(app);
     const failure = await action(app, initial.state.id, 'retry-me');
     expect(failure.statusCode).toBe(502);
+    expect(failure.json().error).toContain('处理本回合时出现异常');
     expect((await app.inject(`/api/games/${initial.state.id}`)).json()).toEqual(initial);
     invalid = false;
     expect((await action(app, initial.state.id, 'retry-me')).statusCode).toBe(200);
+  });
+
+  it.each<[string, () => Response]>([
+    ['发言与玩家原话不符', () => completion({kind:'speak', private:false, words:'private-upstream-detail'})],
+    ['未通过格式校验', () => completion({kind:'invalid', extra:'private-upstream-detail'})],
+    ['HTTP 403', () => new Response('private-upstream-detail', {status:403})],
+    ['未能连接模型服务', () => { throw Error('private-upstream-detail'); }],
+  ])('回合提示区分 %s，只保留安全原因，重试前世界保持原状', async (notice, respond) => {
+    const provider = new OpenAICompatibleProvider({
+      mode:'openai', baseUrl:'https://private-endpoint.invalid/v1', apiKey:'private-test-key', model:'fixture',
+      temperature:0.3, timeoutMs:1000, maxTokens:800, retries:0,
+    }, async () => respond());
+    let live = false;
+    const app = appAt(':memory:', () => live ? provider : createProvider());
+    const initial = await create(app);
+    live = true;
+    const failure = await action(app, initial.state.id, 'diagnose', 0, '“请在这里等候。”');
+    expect(failure.statusCode).toBe(502);
+    expect(failure.json().error).toContain(notice);
+    expect(failure.body).not.toMatch(/private-|请在这里等候/u);
+    expect((await app.inject('/api/games/' + initial.state.id)).json()).toEqual(initial);
   });
 
   it('日志插入故障时回滚同一事务中的世界状态写入', async () => {

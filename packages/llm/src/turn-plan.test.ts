@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ParseContextSchema, TurnPlanSchema, type ParseContext, type ProviderConfig, type TurnPlan } from '@worldsim/shared';
+import { ParseContextSchema, spokenPlanWords, TurnPlanSchema, turnPlanSchemaFor, type ParseContext, type ProviderConfig, type TurnPlan } from '@worldsim/shared';
 import { OpenAICompatibleProvider } from './openai';
 
 const config: ProviderConfig = {
@@ -19,6 +19,10 @@ const scene = (text: string): ParseContext => ({
 const completion = (output: unknown) => Response.json({choices:[{finish_reason:'stop', message:{content:JSON.stringify(output)}}]});
 const greeting = '"早，艾琳"——我回复道，顺手看了看长桌，想知道有哪些议程';
 const mixed: TurnPlan = {kind:'speak', words:'早，艾琳', targetId:'steward', private:false, reading:{documentId:'agenda',source:'顺手看了看长桌'}};
+const first = '如果他能现在自守，我可以既往不咎，否则，';
+const last = '他的下场可不会好';
+const gesture = '我审视着在场的诸多人物';
+const interruptedLine = '“' + first + '”' + gesture + '“' + last + '”';
 
 describe('真实适配器的回合计划协议', () => {
   it.each<[string, TurnPlan]>([
@@ -81,4 +85,52 @@ describe('真实适配器的回合计划协议', () => {
     const retry = JSON.parse(String(fetcher.mock.calls[1][1]?.body));
     expect(retry.messages[0].content).toContain('private (invalid_type)');
   });
+
+  it.each([{words:[first, last]}, {words:first + last}, {words:first}])(
+    '两句玩家台词被动作隔开时，旧计划和分段计划都完整传达两句 %#', async ({words}) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(completion({kind:'speak', private:false, words}));
+      const context = scene(interruptedLine);
+      const plan = await new OpenAICompatibleProvider(config, fetcher).interpret(context);
+      expect(plan).toEqual({kind:'speak', private:false, words:[first, last]});
+      expect(turnPlanSchemaFor(context).parse(plan)).toEqual(plan);
+      if (plan.kind !== 'speak') throw Error('expected speech');
+      expect(spokenPlanWords(plan.words)).toBe(first + '\n' + last);
+    });
+
+  it('多说话人或夹有被引用的资料时，仅提交模型逐段指定的玩家台词', () => {
+    const input = '我说：“开门。”卫兵答：“等着。”我接着说：“我就在门口。”';
+    const schema = turnPlanSchemaFor(scene(input));
+    const chosen = {kind:'speak', private:false, words:['开门。', '我就在门口。']};
+    expect(schema.parse(chosen)).toEqual(chosen);
+    expect(schema.safeParse({...chosen,words:'开门。我就在门口。'}).success).toBe(false);
+    expect(schema.safeParse({...chosen,words:['开门。”卫兵答：“等着。']}).success).toBe(false);
+    const reading = {kind:'speak', private:false, words:['早。'], reading:{documentId:'agenda',source:'查看“议程”'}};
+    const combined = turnPlanSchemaFor(scene('“早。”我说，随后查看“议程”'));
+    expect(combined.parse(reading)).toEqual(reading);
+    expect(combined.parse({...reading,words:'早。'})).toEqual({...reading,words:'早。'});
+    expect(schema.parse({...chosen,words:'开门。'})).toEqual({...chosen,words:'开门。'});
+  });
+
+  it('模型随第一段台词提供实际的动作描写时，保留出处，只把两句原话当发言', async () => {
+    const observed = {kind:'speak', private:false, words:first, source:gesture};
+    const context = scene(interruptedLine);
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(completion(observed));
+    const plan = await new OpenAICompatibleProvider(config,fetcher).interpret(context);
+    expect(plan).toEqual({...observed,words:[first,last]});
+    expect(turnPlanSchemaFor(context).parse(plan)).toEqual(plan);
+  });
+
+  it.each([last, '我挥了挥手', first + '”' + gesture, '，'])('拒绝不属于引语外实际描写的发言 source：%s', source => {
+    const result = turnPlanSchemaFor(scene(interruptedLine)).safeParse({kind:'speak', private:false, words:first, source});
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({code:'custom',path:['source']}));
+  });
+
+  it.each([{words:[last,first]}, {words:[first,first]}, {words:[first,'他的下场很坏']},
+    {words:[first,gesture,last]}, {words:first + '”' + gesture + '“' + last}])(
+    '拒绝重排、重复、虚构或把动作说出口的计划 %#', ({words}) => {
+      const result = turnPlanSchemaFor(scene(interruptedLine)).safeParse({kind:'speak', private:false, words});
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({code:'custom',path:['words']}));
+    });
 });

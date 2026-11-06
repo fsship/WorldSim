@@ -1,4 +1,4 @@
-import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig } from '@worldsim/shared'
+import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig, LlmCallStatus, LlmCallDetail, LlmCallList } from '@worldsim/shared'
 
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -33,6 +33,13 @@ export const api = {
   snapshot: (id: string, version: number) => request<SnapshotSummary>(gamePath(id) + '/snapshots', 'POST', { version }),
   snapshots: (id: string) => request<SnapshotSummary[]>(gamePath(id) + '/snapshots'),
   restore: (id: string, snap: string) => request<GameView>(gamePath(id) + '/snapshots/' + encodeURIComponent(snap) + '/load', 'POST', {}),
+  llmCalls: (q: string, status: '' | LlmCallStatus, offset: number, limit: number) => {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) })
+    if (q) params.set('q', q)
+    if (status) params.set('status', status)
+    return request<LlmCallList>('/llm-calls?' + params)
+  },
+  llmCall: (id: number) => request<LlmCallDetail>('/llm-calls/' + id),
   settings: () => request<PublicConfig>('/settings'),
   configure: (config: ProviderConfig) => request<PublicConfig>('/settings', 'PUT', config)
 }

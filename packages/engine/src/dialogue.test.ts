@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockLLMProvider } from "@worldsim/llm";
+import { MockLLMProvider, OpenAICompatibleProvider } from "@worldsim/llm";
 import { createPalace } from "@worldsim/scenarios";
 import type { ActionIntent, DialogueContext, GameTurn } from "@worldsim/shared";
 import { runTurn } from "./index";
@@ -25,6 +25,36 @@ function expectClarification(turn: GameTurn) {
 }
 
 describe("玩家引述发言与当前听者", () => {
+  it.each(["offline", "interpret"])("插入动作描写的两段台词完整传给听者，动作本身不会被念出（%s）", async mode => {
+    const first = "如果他能现在自守，我可以既往不咎，否则，";
+    const second = "他的下场可不会好";
+    const direction = "我审视着在场的诸多人物";
+    const input = "“" + first + "”" + direction + "“" + second + "”";
+    const contexts: DialogueContext[] = [];
+    const npc = new MockLLMProvider({
+      dialogue: ctx => { contexts.push(ctx); return {text:"我听清了。", factIds:[]}; },
+      reviewDialogue: () => accepted,
+    });
+    const adapter = new OpenAICompatibleProvider({
+      mode:"openai", baseUrl:"https://example.invalid", model:"fixture", temperature:0, timeoutMs:1000, maxTokens:300, retries:0,
+    }, async () => Response.json({choices:[{message:{content:JSON.stringify({kind:"speak", words:first, source:direction, private:false})}}]}));
+    const provider = mode === "offline" ? npc : Object.assign(npc, {interpret:adapter.interpret.bind(adapter)});
+    const {turn, world} = await runTurn(start(), input, provider);
+    const spoken = first + "\n" + second;
+    expect(turn.resolution.status).toBe("resolved");
+    expect(turn.input).toBe(input);
+    expect(turn.endTime - turn.startTime).toBe(2);
+    expect(turn.events.filter(event => event.source === "speech").map(event => event.text)).toEqual([spoken]);
+    expect(turn.hearing).toEqual({volume:"room", listeners:["艾琳","罗兰"]});
+    expect(contexts[0].input).toBe(spoken);
+    const followup = new MockLLMProvider({
+      dialogue: ctx => { contexts.push(ctx); return {text:"陛下请讲。", factIds:[]}; },
+      reviewDialogue: () => accepted,
+    });
+    await runTurn(world, "“你听清了吗？”我问道", followup);
+    expect(contexts.at(-1)?.history).toContainEqual({role:"player", text:spoken});
+  });
+
   it.each([openingQuestion, namedQuestion])("开场原话 %s 得到艾琳的晨报", async input => {
     const world = start();
     const result = await runTurn(world, input, mock);

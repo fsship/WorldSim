@@ -6,6 +6,7 @@ import { CompassMark, Icon, type IconName } from './Icon'
 import { Journal } from './Journal'
 import { Status } from './Status'
 import { Modal } from './Modal'
+import { PageLink, type Navigate } from './PageLink'
 import { ConfigPanel, HistoryPanel, SavesPanel, WaitPanel } from './Panels'
 
 type Panel = 'history' | 'wait' | 'saves' | 'settings' | 'new' | 'status' | 'nav'
@@ -13,7 +14,7 @@ const panels: Record<Panel, [string, IconName]> = {
   history: ['历史记录', 'history'], wait: ['时间控制', 'hourglass'], saves: ['存档管理', 'archive'],
   settings: ['模型设置', 'sliders'], new: ['新建游戏', 'plus'], status: ['世界状态', 'panel'], nav: ['世界导航', 'compass']
 }
-function SideNav({ panel, config, open, disabled }: { panel: Panel | null, config: PublicConfig | null, open: (id: Panel | null) => void, disabled: boolean }) {
+function SideNav({ panel, config, open, disabled, navigate }: { navigate: Navigate, panel: Panel | null, config: PublicConfig | null, open: (id: Panel | null) => void, disabled: boolean }) {
   function link(id: Panel | null, label: string, icon: IconName) {
     return <button type="button" key={label} className={'nav-link' + ((panel === id || (id === null && panel === 'nav')) ? ' selected' : '')} onClick={() => open(id)} disabled={disabled} aria-current={panel === id ? 'page' : undefined}>
       <Icon name={icon} size={18}/><span>{label}</span>
@@ -25,7 +26,9 @@ function SideNav({ panel, config, open, disabled }: { panel: Panel | null, confi
       <div className="nav-caption">游戏空间</div>
       {link(null, '世界剧场', 'compass')}{link('history', '历史记录', 'history')}{link('wait', '时间控制', 'hourglass')}
     </div>
-    <div className="nav-group"><div className="nav-caption">管理</div>{link('saves', '存档管理', 'archive')}{link('settings', '模型设置', 'sliders')}</div>
+    <div className="nav-group"><div className="nav-caption">管理</div>{link('saves', '存档管理', 'archive')}{link('settings', '模型设置', 'sliders')}
+      <PageLink href="/llm-calls" navigate={navigate} className="nav-link"><Icon name="journal" size={18}/>模型调用记录</PageLink>
+    </div>
     <button className="engine-indicator" disabled={disabled} onClick={() => open('settings')}><span className="engine-mark"><Icon name="sparkle" size={17}/></span><span><b>模拟引擎</b><small><i/>{config ? config.mode === 'mock' ? '本地 Mock' : config.model : '连接中…'}</small></span><Icon name="chevron" size={13}/></button>
   </nav>
 }
@@ -40,7 +43,7 @@ function Hero({ game }: { game: GameView | null }) {
     <i className="hero-corner tl"/><i className="hero-corner br"/>
   </section>
 }
-export function App() {
+export function App({ navigate, active }: { navigate: Navigate, active: boolean }) {
   const [game, setGame] = useState<GameView | null>(null)
   const [config, setConfig] = useState<PublicConfig | null>(null)
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -79,6 +82,10 @@ export function App() {
     if (locked.current) return
     setPanel(id); setError('')
     if (!id) requestAnimationFrame(() => inputRef.current?.focus())
+  }
+  const leaveForLogs: Navigate = page => {
+    setPanel(null)
+    navigate(page)
   }
   function switchGame(view: GameView) {
     accept(view); setDraft(''); pending.current = null; setPanel(null); setError('')
@@ -147,10 +154,10 @@ export function App() {
   }
   const disabled = busy || !game
   return <div className="app-shell">
-    <aside className="desktop-nav"><SideNav panel={panel} open={open} config={config} disabled={disabled}/></aside>
+    <aside className="desktop-nav"><SideNav panel={panel} open={open} config={config} disabled={disabled} navigate={leaveForLogs}/></aside>
     <main className="workbench">
       <header className="topbar">
-        <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => open('nav')} disabled={disabled}><Icon name="menu"/></button><Icon name="book" size={16}/><span>世界剧场</span><span className="crumb-separator">/</span><b>{game?.state.title ?? '王宫疑云'}</b></div>
+        <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => open('nav')} disabled={busy}><Icon name="menu"/></button><Icon name="book" size={16}/><span>世界剧场</span><span className="crumb-separator">/</span><b>{game?.state.title ?? '王宫疑云'}</b></div>
         <div className="toolbar"><span className="autosave"><Icon name="cloud" size={16}/>{busy ? '正在处理' : game ? '已自动保存' : '正在连接'}</span><button className="secondary new-button" disabled={disabled} onClick={() => open('new')}><Icon name="plus" size={15}/><span>新建游戏</span></button>
           <button className="icon-button mobile-status" aria-label="查看世界状态" onClick={() => open('status')} disabled={disabled}><Icon name="panel"/></button>
         </div>
@@ -177,8 +184,8 @@ export function App() {
       </div>
     </main>
     {notice && <div className="toast" role="status"><Icon name="check" size={16}/>{notice}</div>}
-    {panel && <Modal key={panel} title={panels[panel][0]} icon={panels[panel][1]} wide={panel === 'history' || panel === 'saves'} onClose={() => { if (!locked.current) setPanel(null) }}>
-      {panel === 'nav' && <SideNav panel={panel} open={open} config={config} disabled={disabled}/>}
+    {active && panel && <Modal key={panel} title={panels[panel][0]} icon={panels[panel][1]} wide={panel === 'history' || panel === 'saves'} onClose={() => { if (!locked.current) setPanel(null) }}>
+      {panel === 'nav' && <SideNav panel={panel} open={open} config={config} disabled={disabled} navigate={leaveForLogs}/>}
       {panel === 'status' && game && <Status state={game.state}/>}
       {panel === 'history' && game && <HistoryPanel game={game}/>}
       {panel === 'wait' && game && <WaitPanel busy={busy} time={game.state.time} onWait={input => void act(input, true)}/>}

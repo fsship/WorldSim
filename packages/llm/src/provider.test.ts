@@ -95,7 +95,8 @@ describe('OpenAI 兼容协议', () => {
   it('aborts a stalled request and bounds repeated timeout attempts', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation((_url, init) => new Promise((_resolve, reject) =>
       init?.signal?.addEventListener('abort', () => reject(new Error('timed out')), { once: true })));
-    await expect(new OpenAICompatibleProvider({ ...config, retries: 0 }, fetcher).parse(parseContext)).rejects.toThrow();
+    await expect(new OpenAICompatibleProvider({ ...config, retries: 0 }, fetcher).parse(parseContext))
+      .rejects.toMatchObject({task:'parse', reason:'timeout'});
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('rejects credentials embedded in URLs and remote cleartext endpoints', () => {

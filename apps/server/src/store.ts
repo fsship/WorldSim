@@ -3,17 +3,23 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { and, asc, desc, eq, lte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getColumns, inArray, lte, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-sqlite';
 import { displayReplyRecovery, projectTurn, projectWorld, replyRecovery } from '@worldsim/engine';
 import { loadScenarioWorld } from '@worldsim/scenarios';
 import {
-  GameTurnSchema, GameViewSchema, PublicTurnSchema, PublicStateSchema, WorldStateSchema,
-  type GameSummary, type GameTurn, type GameView, type ProviderConfig,
-  type SnapshotSummary, type WorldState,
+  GameTurnSchema, GameViewSchema, llmTaskLabels, PublicTurnSchema, PublicStateSchema, WorldStateSchema,
+  type GameSummary, type GameTurn, type GameView, type LlmCallDetail, type LlmCallEntry,
+  type LlmCallList, type ProviderConfig, type SnapshotSummary, type WorldState,
 } from '@worldsim/shared';
 import { ApiError, versionConflict } from './errors';
-import { games, migration1, settings, snapshots, turns } from './schema';
+import { games, llmCalls, migration1, migration2, settings, snapshots, turns } from './schema';
+
+const { requestBody, responseBody, responseTruncated, ...callSummaryColumns } = getColumns(llmCalls);
+const callSearchColumns = [
+  llmCalls.callId, llmCalls.gameId, llmCalls.task, llmCalls.model, llmCalls.errorReason,
+  llmCalls.status, requestBody, responseBody,
+];
 
 export interface Command {
   requestId: string;
@@ -39,8 +45,9 @@ export class GameStore {
       this.connection.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;');
       this.connection.exec('BEGIN IMMEDIATE');
       const version = this.connection.prepare('PRAGMA user_version').get()?.user_version;
+      if (version !== 0 && version !== 1 && version !== 2) throw new Error('当前服务无法读取此版本的存档数据库。');
       if (version === 0) this.connection.exec(migration1);
-      else if (version !== 1) throw new Error('当前服务无法读取此版本的存档数据库。');
+      if (version < 2) this.connection.exec(migration2);
       this.connection.exec('COMMIT');
       this.db = drizzle({ client: this.connection });
     } catch (error) {
@@ -61,6 +68,38 @@ export class GameStore {
     this.db.insert(settings).values({ id: 1, config }).onConflictDoUpdate({
       target: settings.id, set: { config },
     }).run();
+  }
+
+  recordLlmCall(entry: LlmCallEntry): void {
+    this.db.insert(llmCalls).values(entry).run();
+  }
+
+  listLlmCalls(options: {
+    q?: string; status?: LlmCallEntry['status']; offset: number; limit: number;
+  }): LlmCallList {
+    // Escape the wildcard and escape characters so a search matches the literal text.
+    const query = options.q?.trim();
+    const pattern = query ? '%' + query.replace(/[%_/]/g, '/$&') + '%' : undefined;
+    const matchingTasks = query ? Object.keys(llmTaskLabels).filter(task => llmTaskLabels[task].includes(query)) : [];
+    const filter = and(
+      options.status ? eq(llmCalls.status, options.status) : undefined,
+      pattern ? or(
+        ...callSearchColumns.map(column => sql`${column} LIKE ${pattern} ESCAPE '/'`),
+        matchingTasks.length ? inArray(llmCalls.task, matchingTasks) : undefined,
+      ) : undefined,
+    );
+    return this.db.transaction(tx => {
+      const total = tx.select({ n: count() }).from(llmCalls).where(filter).get()!.n;
+      const items = tx.select(callSummaryColumns).from(llmCalls).where(filter)
+        .orderBy(desc(llmCalls.id)).limit(options.limit).offset(options.offset).all();
+      return { items, total };
+    });
+  }
+
+  llmCall(id: number): LlmCallDetail {
+    const call = this.db.select().from(llmCalls).where(eq(llmCalls.id, id)).get();
+    if (!call) throw new ApiError(404, '找不到这条模型调用记录。');
+    return call;
   }
 
   list(): GameSummary[] {

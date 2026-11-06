@@ -6,8 +6,8 @@ import staticFiles from '@fastify/static';
 import { z } from 'zod';
 import { prepareOpening, projectWorld, replyRecovery, retryDialogue, retryOpening, runTurn } from '@worldsim/engine';
 import { createPalace } from '@worldsim/scenarios';
-import { createProvider } from '@worldsim/llm';
-import { ProviderConfigSchema, TurnRequestSchema, type GameView, type ProviderConfig } from '@worldsim/shared';
+import { createProvider, ProviderFailure } from '@worldsim/llm';
+import { llmTaskLabels, ProviderConfigSchema, TurnRequestSchema, type GameView, type ProviderConfig } from '@worldsim/shared';
 import { assertPrivateDatabase, envConfig, publicConfig, updateConfig } from './config';
 import { ApiError, versionConflict } from './errors';
 import { GameStore, type Command } from './store';
@@ -15,6 +15,13 @@ import { GameStore, type Command } from './store';
 const snapshotInput = TurnRequestSchema.pick({ version: true });
 const emptyInput = z.object({}).strict();
 const openingInput = z.object({version:z.literal(0)}).strict();
+const callListQuery = z.object({
+  q: z.string().trim().max(200).optional(),
+  status: z.enum(['success', 'error']).optional(),
+  offset: z.coerce.number().int().nonnegative().safe().default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+}).strict();
+const callIdParam = z.object({ id: z.coerce.number().int().positive().safe() });
 type ActiveRequest = { kind:'turn'; command:Command; result:Promise<GameView> } |
   { kind:'opening'; result:Promise<GameView> } | {kind:'dialogue'; version:number; result:Promise<GameView>};
 
@@ -32,6 +39,18 @@ function isLocalHost(host: string | undefined): boolean {
   return /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/i.test(host);
 }
 
+function providerFailureNotice(error: ProviderFailure): string {
+  const stage = llmTaskLabels[error.task];
+  switch (error.reason) {
+    case 'speech_evidence': return '模型提取的发言与玩家原话不符。';
+    case 'format': return stage + '时，模型返回的内容未通过格式校验。';
+    case 'timeout': return stage + '时，模型请求超时。';
+    case 'network': return stage + '时，未能连接模型服务。';
+    case 'http': return stage + '时，模型服务返回 HTTP ' + error.httpStatus + '。' +
+      (error.httpStatus === 401 || error.httpStatus === 403 ? '请检查模型服务的访问权限。' : '');
+  }
+}
+
 export function buildApp(options: Options) {
   assertPrivateDatabase(options.databasePath, options.staticRoot);
   const defaultConfig = envConfig(options.env ?? process.env);
@@ -43,6 +62,10 @@ export function buildApp(options: Options) {
   const makeProvider = options.providerFactory ?? createProvider;
   const getConfig = (): ProviderConfig => ProviderConfigSchema.parse(store.config() ?? defaultConfig);
   const inFlight = new Map<string, ActiveRequest>();
+
+  function providerFor(gameId: string, turnVersion: number) {
+    return makeProvider(getConfig(), attempt => store.recordLlmCall({ ...attempt, gameId, turnVersion }));
+  }
 
   app.addHook('onClose', async () => store.close());
   app.addHook('onRequest', async (req, reply) => {
@@ -71,10 +94,14 @@ export function buildApp(options: Options) {
     return reply.status(code).send({ error: code === 500 ? '操作未完成，请稍后重试。' : '请求格式无效。' });
   });
 
+  app.get('/api/llm-calls', async req => store.listLlmCalls(callListQuery.parse(req.query)));
+  app.get('/api/llm-calls/:id', async req => store.llmCall(callIdParam.parse(req.params).id));
+
   app.get('/api/games', async () => store.list());
   app.post('/api/games', async req => {
     emptyInput.parse(req.body);
-    return store.create(await prepareOpening(createPalace(randomUUID()), makeProvider(getConfig())));
+    const world = createPalace(randomUUID());
+    return store.create(await prepareOpening(world, providerFor(world.id, world.version)));
   });
   app.get<{ Params: { id: string } }>('/api/games/:id', async req => store.view(req.params.id));
   app.post<{ Params: { id: string } }>('/api/games/:id/opening/retry', async req => {
@@ -90,7 +117,7 @@ export function buildApp(options: Options) {
     if (!state.openingRetryable) throw new ApiError(409, '开场已经发生了不可重复的行动。');
     async function recover() {
       let next;
-      try { next = await retryOpening(base, makeProvider(getConfig())); }
+      try { next = await retryOpening(base, providerFor(id, base.version)); }
       catch {
         req.log.warn({ gameId:id }, 'opening recovery failed');
         throw new ApiError(502, '开场重试失败，原存档已保留。');
@@ -114,7 +141,7 @@ export function buildApp(options: Options) {
     if (eligibility?.replacement) return store.view(id);
     if (!eligibility) throw new ApiError(409,'提问后的现场已变化，或本回合没有可补答的台词。');
     async function recover() {
-      const next = await retryDialogue(base,turn,makeProvider(getConfig()));
+      const next = await retryDialogue(base,turn,providerFor(id, version));
       if ('notice' in next) {
         if (replyRecovery(store.world(id),turn)?.replacement) return store.view(id);
         throw new ApiError(502,next.notice + '时间和原回合已保留，可以再试。');
@@ -148,12 +175,14 @@ export function buildApp(options: Options) {
     const play = async (): Promise<GameView> => {
       let next: Awaited<ReturnType<typeof runTurn>>;
       try {
-        next = await runTurn(world, command.input, makeProvider(getConfig()));
-      } catch {
-        // Provider exceptions may include upstream request data. Never expose
-        // exception details or log untrusted provider payloads.
-        req.log.warn({ gameId: id, version: command.version }, 'turn generation failed');
-        throw new ApiError(502, '本回合生成失败，存档已保留。请检查模型配置后重试。');
+        next = await runTurn(world, command.input, providerFor(id, command.version + 1));
+      } catch (error) {
+        const diagnostic = error instanceof ProviderFailure
+          ? {stage:error.task, reason:error.reason, httpStatus:error.httpStatus}
+          : {stage:'turn', reason:'unexpected'};
+        req.log.warn({gameId:id, version:command.version, ...diagnostic}, 'turn generation failed');
+        const notice = error instanceof ProviderFailure ? providerFailureNotice(error) : '处理本回合时出现异常。';
+        throw new ApiError(502, notice + '存档已保留，可以重试。');
       }
       const view = store.commit(world, command, next);
       req.log.info({ gameId: id, version: view.state.version }, 'turn committed');
