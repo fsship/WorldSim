@@ -14,6 +14,9 @@
 .scenario-actions .primary { margin-left: auto; }
 .scenario-editor h3 { font: 600 20px/1.4 var(--serif); }
 .scenario-editor h4 { font: 600 16px/1.4 var(--serif); }
+.scenario-details > summary, .world-info > summary { cursor: pointer; color: var(--forest); font-weight: 600; }
+.scenario-details[open] > summary { margin-bottom: 14px; }
+.world-info p { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
 .editor-section { border-top: 1px solid var(--line); padding-top: 15px; }
 .editor-section .form-note { margin-top: -5px; }
 .editor-block { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; }

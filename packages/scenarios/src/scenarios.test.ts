@@ -66,7 +66,36 @@ describe('剧本编译与开局', () => {
       const world = createCustomScenario('solo', 'game', {...draft, npcs});
       expect(world.history).toHaveLength(1);
       expect(world.history[0].noticeWitnessIds).toEqual([world.characters[0].id]);
+      expect(world.worldInfo).toBeUndefined();
     }
+  });
+
+  it('只写世界与当下处境即可开局，初始演员只有玩家，设定随世界存档', () => {
+    const worldInfo = '群岛之间的邮船靠烟火辨认航路。每座岛都有哨塔。';
+    const opening = '你站在海堤上，看着雾中的灯光。';
+    const minimal = {worldInfo, opening};
+    const definition = ScenarioDefinitionSchema.parse(minimal);
+    expect(definition.title).toBe('群岛之间的邮船靠烟火辨认航路');
+    expect(definition.npcs).toEqual([]);
+    const world = createCustomScenario('sea', 'game', minimal);
+    expect(world.worldInfo).toBe(worldInfo);
+    expect(world.characters).toHaveLength(1);
+    expect(world.characters[0]).toMatchObject({kind:'player', locationId:world.locations[0].id});
+    expect(world.history.map(event => event.text)).toEqual([opening]);
+    expect(loadScenarioWorld(world)).toEqual(world);
+    expect(createCustomScenario('sea', 'game', definition)).toEqual(world);
+  });
+
+  it('世界模式可以补充起始地点与预设角色；旧剧本仍需完整定义', () => {
+    const locations = [draft.locations[1]];
+    const world = createCustomScenario('garden', 'game', {
+      worldInfo:'潮间带上的温室。', opening:draft.opening, locations,
+      npcs:[{name:'阿颂', role:'船客', locationId:locations[0].id}],
+    });
+    expect(world.characters.map(person => person.name)).toEqual(['主角', '阿颂']);
+    expect(world.characters[0].locationId).toBe(locations[0].id);
+    expect(ScenarioDefinitionSchema.safeParse({opening:draft.opening}).success).toBe(false);
+    expect(ScenarioDefinitionSchema.safeParse({opening:draft.opening, worldInfo:'   '}).success).toBe(false);
   });
 
   it('拒绝重名、断开的地点引用和越界事件，保存前统一处理空白', () => {

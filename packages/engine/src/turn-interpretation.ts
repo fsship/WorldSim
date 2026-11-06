@@ -6,6 +6,7 @@ import {
 import { adjudicate, refused, type ActionMeaning, type Adjudication } from "./actions";
 import { impliedListener, lastNpcLine } from "./conversation";
 import { crowdReferent, groupForContact } from "./crowd-contact";
+import { considerEncounter, offlineSeeksContact } from "./encounter";
 import { player, present, record } from "./state";
 
 interface Interpretation {
@@ -64,6 +65,8 @@ function sceneContext(world: WorldState, king: Character, text: string): ParseCo
   }
   return {
     text, location:room.name, surroundings:roomDescription(world,room).slice(0,800), referents,
+    ...(world.worldInfo ? {worldInfo:world.worldInfo, openingSituation:world.history.find(event =>
+      event.source === "opening" && event.kind === "world" && event.recipients.includes(king.id) && event.perception !== "private")?.text} : {}),
     ...(previousWait ? {previousWait} : {}),
     exits:places.filter(p => p.id !== room.id).map(p => p.name), items:items.map(i => i.name),
     people:referents.filter(r=>r.kind === "npc" || r.kind === "crowd").flatMap(r=>[r.name,...r.aliases]),
@@ -86,7 +89,7 @@ function readSelection(selection: Extract<TurnPlan, {kind:"read"}>["reading"]): 
     ...(selection.resume || selection.nextOnly ? {resume:true} : {}), ...(selection.nextOnly ? {nextOnly:true} : {})};
 }
 
-function executeMeaning(world: WorldState, context: ParseContext, plan: TurnPlan): Interpretation {
+function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<TurnPlan, {kind:"seekContact"}>): Interpretation {
   const offered = (kind: ParseReferent["kind"], id: string) => {
     const matches = context.referents!.filter(ref => ref.kind === kind && ref.id === id);
     return matches.length === 1 ? matches[0] : undefined;
@@ -160,15 +163,37 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: TurnPlan
   }
 }
 
+function contactResult(plan: Extract<TurnPlan, {kind:"seekContact"}>, introduced: boolean): Interpretation {
+  return {intent:{kind:"attempt"}, plan, resolution:{
+    candidates:[{id:"seek-contact", status:"resolved", minutes:2, changes:[],
+      lines:introduced ? [] : [{kind:"world", text:"你查看了现场，没有遇到新的人。"}]}],
+    askModel:false, waiting:false, checks:["只接触当前位置的人物"],
+  }};
+}
+
 export async function interpretTurn(world: WorldState, text: string, provider: LLMProvider): Promise<Interpretation> {
   const king = player(world);
-  const context = sceneContext(world, king, text);
+  let context = sceneContext(world, king, text);
+  const dynamic = !!world.worldInfo && king.condition === "healthy" && !king.journey;
   if (provider.interpret) {
+    if (dynamic) context.allowEncounter = true;
     const plan = turnPlanSchemaFor(context).parse(await provider.interpret(structuredClone(context)));
+    if (plan.kind === "seekContact") {
+      const event = await considerEncounter(world, provider, "contact", text);
+      // Resolve only actual speech against the now-visible cast. A search never authorizes
+      // a second physical operation (movement, orders, arrest) in this turn.
+      const after = sceneContext(world, king, text);
+      const follow = turnPlanSchemaFor(after).parse(await provider.interpret(structuredClone(after)));
+      if (follow.kind === "speak") return executeMeaning(world, after, follow);
+      return contactResult(plan, !!event);
+    }
     return executeMeaning(world, context, plan);
   }
   // Offline simulation and legacy injected providers share the deterministic reader.
   // The real provider never enters this branch, including on a model or validation error.
+  const search = dynamic && offlineSeeksContact(text);
+  const encounter = search ? await considerEncounter(world, provider, "contact", text) : undefined;
+  if (encounter) context = sceneContext(world, king, text);
   const room = world.locations.find(l => l.id === king.locationId)!;
   const readableIds = new Set(world.history.flatMap(e => e.bookmark && e.recipients.includes(king.id) ? [e.bookmark.documentId] : []));
   const readableNames = context.referents!.filter(ref => ref.kind === "document").flatMap(ref => [ref.name, ...ref.aliases]);
@@ -183,6 +208,7 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   }
   const parsed = explicit?.reading ? explicit.intent : ActionIntentSchema.parse(await provider.parse(context));
   const intent = explicit?.intent ?? parsed;
+  if (search && intent.kind !== "speak") return contactResult({kind:"seekContact"}, !!encounter);
   const addressed = explicit?.dialogue?.addressee;
   if (addressed && intent.kind === "speak") {
     const targets = context.referents!.filter(r=>(r.kind === "npc" || r.kind === "crowd") && [r.name,...r.aliases].includes(addressed));

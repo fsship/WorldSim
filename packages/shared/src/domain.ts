@@ -61,6 +61,11 @@ export const stateChangeSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute}).strict(),
   z.object({ op: z.literal("move"), actor: id, to: id }).strict(),
   z.object({ op:z.literal("meet"), group:id, locationId:id }).strict(),
+  z.object({
+    op:z.literal("encounter"), locationId:id, trigger:z.enum(["opening", "arrival", "contact", "event"]), cue:id.optional(),
+    witnessedEventIds:z.array(id).max(256).optional(),
+    person:z.object({id, name:id.max(60), role:id.max(60), duty:id.max(240), goal:id.max(240).optional()}).strict().optional(),
+  }).strict(),
   z.object({ op: z.literal("relation"), actor: id, other: id, delta: z.number().int().min(-1).max(1) }).strict(),
   z.object({ op: z.literal("detain"), actor: id }).strict(),
   z.object({ op: z.literal("learn"), actor: id, fact: id }).strict(),
@@ -95,7 +100,7 @@ export const worldEventSchema = z.object({
     worldPulse: z.literal(true).optional(),
     regional: z.literal(true).optional(),
   }).strict().optional(),
-  npcFailure: z.enum(["decision", "generation", "validation", "review", "review_unavailable"]).optional(),
+  npcFailure: z.enum(["encounter", "decision", "generation", "validation", "review", "review_unavailable"]).optional(),
   npcReview: DialogueVerdictSchema.optional(),
   perception: visibility,
   locationId: id, recipients: z.array(id), changes: z.array(stateChangeSchema),
@@ -115,6 +120,7 @@ const orderSchema = z.object({
 
 export const worldStateSchema = z.object({
   id, scenario: id, scenarioId:id.optional(), version: z.number().int().nonnegative(), time: minute,
+  worldInfo:z.string().trim().min(1).max(2000).optional(),
   rules: z.object({
     maxWait: z.number().int().min(1).max(1440), maxShort: z.number().int().min(1).max(30),
     useNpcGoals:z.boolean().optional(),

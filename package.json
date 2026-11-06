@@ -19,7 +19,8 @@
     "test:live-hearing": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-hearing.ts",
     "test:live-plans": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-plans.ts",
     "test:live-attendance": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-attendance.ts",
-    "test:live-world": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-world.ts"
+    "test:live-world": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-world.ts",
+    "test:live-encounters": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-encounters.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

@@ -1,13 +1,15 @@
 import { z } from 'zod';
+import { defaultScenarioSetup } from './scenario-setup';
 
 const name = z.string().trim().min(1, '请输入名称').max(60, '名称不能超过 60 字');
 const placeId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,59}$/, '地点标识必须为 1–60 位字母、数字、横线或下划线');
 const note = z.string().trim().max(200, '不能超过 200 字').optional();
 const person = z.object({ name, role:name, locationId:placeId, goal:note }).strict();
 
-export const ScenarioDefinitionSchema = z.object({
+const definitionFields = z.object({
   title:z.string().trim().min(1, '请填写剧本名称').max(80, '剧本名称不能超过 80 字'),
-  opening:z.string().trim().min(1, '请填写开场').max(1200, '开场不能超过 1200 字'),
+  worldInfo:z.string().trim().min(1, '请填写世界信息').max(2000, '世界信息不能超过 2000 字').optional(),
+  opening:z.string().trim().min(1, '请填写当下处境').max(1200, '开场不能超过 1200 字'),
   startTime:z.number().int().min(0).max(1439).optional(),
   locations:z.array(z.object({
     id:placeId, name,
@@ -19,7 +21,9 @@ export const ScenarioDefinitionSchema = z.object({
     afterMinutes:z.number().int().min(1).max(1440), locationId:placeId,
     text:z.string().trim().min(1, '请填写事件内容').max(600, '事件文字不能超过 600 字'),
   }).strict()).max(24, '最多支持 24 个剧情事件').optional(),
-}).strict().superRefine((definition, ctx) => {
+}).strict();
+
+const validatedDefinition = definitionFields.superRefine((definition, ctx) => {
   const placeIds = new Set<string>();
   const placeNames = new Set<string>();
   for (const [i, place] of definition.locations.entries()) {
@@ -41,7 +45,21 @@ export const ScenarioDefinitionSchema = z.object({
   definition.events?.forEach((event, i) => checkPlace(event.locationId, ['events', i]));
 });
 
+// Older fixed-cast scenarios keep their explicit starting cast and map. A
+// world premise opts into encounters and can be authored with two fields.
+export const ScenarioDefinitionSchema = definitionFields.partial({title:true, locations:true, player:true, npcs:true})
+  .transform(input => {
+    if (input.worldInfo === undefined) return input;
+    const setup = defaultScenarioSetup(input.locations?.[0]?.id);
+    const firstLine = input.worldInfo.split(/[。！？\n]/u).find(line => line.trim())?.trim() || input.worldInfo;
+    return {
+      ...input, title:input.title ?? Array.from(firstLine).slice(0, 24).join(''),
+      locations:input.locations ?? setup.locations, player:input.player ?? setup.player, npcs:input.npcs ?? [],
+    };
+  }).pipe(validatedDefinition);
+
 export type ScenarioDefinition = z.infer<typeof ScenarioDefinitionSchema>;
+export type ScenarioInput = z.input<typeof ScenarioDefinitionSchema>;
 
 export interface ScenarioSummary {
   id: string;

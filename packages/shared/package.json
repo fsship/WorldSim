@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./llm-calls": "./src/llm-calls.ts"
+    "./llm-calls": "./src/llm-calls.ts",
+    "./scenario-setup": "./src/scenario-setup.ts"
   },
   "dependencies": { "zod": "^3.25.76" }
 }

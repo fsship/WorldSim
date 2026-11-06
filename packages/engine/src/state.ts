@@ -10,6 +10,11 @@ export function player(world: WorldState) {
   return players[0];
 }
 
+export function sameCharacterName(left: string, right: string) {
+  const normalize = (name: string) => name.normalize("NFKC").toLowerCase().replace(/\s+/gu, "");
+  return normalize(left) === normalize(right);
+}
+
 export function knownFacts(world: WorldState, c: Character): WorldFact[] {
   return world.facts.filter(f => f.createdAt <= world.time && c.knownFactIds.includes(f.id) && f.knownBy.includes(c.id));
 }
@@ -50,8 +55,9 @@ export function projectWorld(world: WorldState): PublicState {
   const opening = world.history.filter(e => e.source === "opening" && e.recipients.includes(king.id) && e.perception !== "private");
   const failed = opening.find(e => e.npcFailure || e.dialogueSource === "fallback");
   const openingRetryable = !!failed && world.version === 0 && opening.every(e =>
-    !e.changes.length && (!e.npcAction || e === failed) && (!e.dialogueSource || e.dialogueSource === "fallback"));
+    e.changes.every(c => c.op === "encounter") && (!e.npcAction || e === failed) && (!e.dialogueSource || e.dialogueSource === "fallback"));
   const notices = {
+    encounter:"暂时无法确认开场会遇见谁。",
     decision:"本次开场没有取得有效的 NPC 行动。",
     generation:"开场台词未能生成。",
     validation:"开场台词未通过内容校验。",
@@ -60,6 +66,7 @@ export function projectWorld(world: WorldState): PublicState {
   };
   return {
     id: world.id, title: world.scenario, scenarioId: world.scenarioId, time: world.time, version: world.version,
+    ...(world.worldInfo ? {worldInfo:world.worldInfo} : {}),
     opening: opening.map(e => e.kind === "npc" && e.speaker ? e.speaker + "：「" + e.text + "」" : e.text).join("\n\n"),
     ...(failed ? {openingUsedFallback:true, openingRetryable,
       openingNotice:failed.npcFailure ? notices[failed.npcFailure] : "这段开场使用了备用回复。"} : {}),
@@ -83,6 +90,35 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
   for (const raw of changes) {
     const change = StateChangeSchema.parse(raw);
     switch (change.op) {
+      case "encounter": {
+        const lead = player(world);
+        if (!world.worldInfo || lead.condition !== "healthy" || !inLocation(lead,change.locationId))
+          throw new Error("当前地点不允许这次相遇。");
+        const spec = change.person;
+        if (!spec) break;
+        if (world.characters.some(c => c.id === spec.id || sameCharacterName(c.name,spec.name)))
+          throw new Error("相遇的人物已在世界中。");
+        const witnessed = (change.witnessedEventIds ?? []).flatMap(id => {
+          // The queue is part of the reducible state even when replaying changes without a journal.
+          const definition = world.queue.find(e => e.id === id);
+          if (change.trigger !== "event" || !definition || definition.status !== "executed" ||
+            definition.at !== world.time || definition.locationId !== lead.locationId ||
+            !["local","public","audible"].includes(definition.perception))
+            throw new Error("人物无法见证该事件。");
+          return world.history.filter(e => e.source === id && e.time === world.time && e.noticeWitnessIds?.includes(lead.id));
+        });
+        const person = arrivalCharacter({id:spec.id, name:spec.name, role:spec.role, locationId:change.locationId,
+          aliases:[spec.role], publicDuty:spec.duty});
+        if (spec.goal) person.goals.push(spec.goal);
+        world.characters.push(person);
+        for (const event of witnessed) if (!event.noticeWitnessIds!.includes(person.id)) event.noticeWitnessIds!.push(person.id);
+        // Only someone first established as present in the opening witnesses the initial situation.
+        if (change.trigger === "opening") {
+          const scene = world.history.find(e => e.source === "opening" && e.kind === "world" && e.locationId === change.locationId);
+          if (scene?.noticeWitnessIds && !scene.noticeWitnessIds.includes(person.id)) scene.noticeWitnessIds.push(person.id);
+        }
+        break;
+      }
       case "meet":
         meetCrowdMember(world,change.group,change.locationId);
         break;

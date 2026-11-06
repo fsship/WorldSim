@@ -6,7 +6,7 @@ import { ApiError } from './errors';
 import type { GameStore } from './store';
 
 const fieldNames: Record<string, string> = {
-  title: '剧本名称', opening: '开场', startTime: '开场时间', locations: '地点', player: '玩家', npcs: 'NPC',
+  title: '剧本名称', worldInfo: '世界信息', opening: '当下处境', startTime: '开场时间', locations: '地点', player: '玩家', npcs: 'NPC',
   id: '标识', name: '名称', description: '描述', role: '身份', locationId: '所在地点',
   goal: '目标', duty: '职责', events: '事件', afterMinutes: '发生时间', text: '事件内容',
 };

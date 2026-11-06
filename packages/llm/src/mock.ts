@@ -1,5 +1,7 @@
+import { offlineEncounter } from './offline-encounter';
 import {
   ActionIntentSchema, NarrationPlanSchema, ResolutionProposalSchema, readPlayerInput, isPrivateSpeech,
+  EncounterContextSchema, encounterProposalSchemaFor, type EncounterContext,
   DialogueContextSchema, DialogueDraftSchema, DialogueReviewContextSchema, DialogueReviewSchema,
   NpcActionContextSchema, npcActionProposalSchemaFor, type NpcActionContext,
   NpcActionReviewContextSchema, NpcActionReviewSchema, type NpcActionReviewContext,
@@ -30,6 +32,7 @@ function parseMock({ text, people, location, items }: ParseContext): ActionInten
 export type MockHandlers = {
   parse?: (context: ParseContext) => unknown | Promise<unknown>;
   resolve?: (context: ResolveContext) => unknown | Promise<unknown>;
+  encounter?: (context: EncounterContext) => unknown | Promise<unknown>;
   decideNpcAction?: (context: NpcActionContext) => unknown | Promise<unknown>;
   reviewNpcAction?: (context: NpcActionReviewContext) => unknown | Promise<unknown>;
   dialogue?: (context: DialogueContext) => unknown | Promise<unknown>;
@@ -56,6 +59,11 @@ export class MockLLMProvider implements LLMProvider {
   async resolve(context: ResolveContext) {
     const value = this.handlers.resolve ? await this.handlers.resolve(context) : { optionId: context.options[0]?.id };
     return ResolutionProposalSchema.parse(value);
+  }
+  async encounter(data: EncounterContext) {
+    const context = EncounterContextSchema.parse(data);
+    const proposal = this.handlers.encounter ? await this.handlers.encounter(context) : offlineEncounter(context);
+    return encounterProposalSchemaFor(context).parse(proposal);
   }
   async decideNpcAction(data: NpcActionContext) {
     const context = NpcActionContextSchema.parse(data);

@@ -4,6 +4,7 @@ import { replyFailureNotice, writeNpcReply } from "./npc-dialogue";
 import { impliedListener } from "./conversation";
 import { disclosureAudience, utterance, withinEarshot } from "./hearing";
 import { inLocation, knownFacts, perceive, player, present, projectWorld, record } from "./state";
+import { considerEncounter } from "./encounter";
 
 type Trigger = NpcActionContext["trigger"];
 
@@ -21,7 +22,7 @@ export async function npcResponse(world: WorldState, npc: Character, input: stri
   const physical = commitNpcAction(world, npc, choice, source, order, trigger);
   if (physical) events.push(physical);
   const willSpeak = proposal.kind === "speak" || (physical && "thenSpeak" in proposal && proposal.thenSpeak);
-  const recordSilence = (failure?: WorldEvent["npcFailure"], verdict?: WorldEvent["npcReview"]) => {
+  const recordSilence = (failure?: Exclude<WorldEvent["npcFailure"], "encounter">, verdict?: WorldEvent["npcReview"]) => {
     const failureText = failure === "decision" ? "本轮未能取得有效的行动。" :
       failure ? replyFailureNotice({failure,verdict}) : undefined;
     const notice = trigger === "opening" ? undefined : failureText;
@@ -197,11 +198,24 @@ function openingActor(world: WorldState, event: WorldEvent) {
 /** A fresh scenario supplies an opening speaker, not a committed line of dialogue. */
 export async function prepareOpening(initial: WorldState, provider: LLMProvider): Promise<WorldState> {
   const world = structuredClone(initial);
-  if (world.version !== 0 || world.history.some(e => e.source === "opening" && (e.npcAction || e.dialogueSource))) return world;
+  if (world.version !== 0 || world.history.some(e => e.source === "opening" &&
+      (e.npcAction || e.dialogueSource || e.npcFailure || e.changes.some(c => c.op === "encounter")))) return world;
   const seed = world.history.find(e => e.source === "opening" && e.kind === "npc" && perceive(e, world));
-  if (!seed) return world;
-  const npc = openingActor(world, seed);
-  world.history = world.history.filter(e => e !== seed);
+  let npc: Character | undefined;
+  if (seed) {
+    npc = openingActor(world, seed);
+    world.history = world.history.filter(e => e !== seed);
+  } else if (world.worldInfo) {
+    const lead = player(world);
+    try {
+      const event = await considerEncounter(world, provider, "opening");
+      const change = event?.changes.find(c => c.op === "encounter");
+      npc = change?.person && world.characters.find(c => c.id === change.person?.id);
+    } catch {
+      record(world,{source:"opening", kind:"system", text:"开场人物暂时无法生成。",
+        perception:"addressed", locationId:lead.locationId, recipients:[lead.id], changes:[], npcFailure:"encounter"});
+    }
+  }
   if (npc) await npcResponse(world, npc, "", player(world).name + "在场，尚未开口，请自行决定此刻做什么。",
     [], provider, "opening");
   return world;
@@ -213,6 +227,10 @@ export async function retryOpening(initial: WorldState, provider: LLMProvider): 
   const world = structuredClone(initial);
   const failed = world.history.find(e => e.source === "opening" && (e.npcFailure || e.dialogueSource === "fallback"));
   if (!failed) return initial;
+  if (failed.npcFailure === "encounter") {
+    world.history = world.history.filter(e => e !== failed);
+    return prepareOpening(world, provider);
+  }
   const npc = openingActor(world, failed);
   if (!npc) return initial;
   world.history = world.history.filter(e => e !== failed);

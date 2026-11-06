@@ -1,4 +1,4 @@
-import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig, LlmCallStatus, LlmCallDetail, LlmCallList, ScenarioDefinition, ScenarioSummary } from '@worldsim/shared'
+import type { GameView, GameSummary, SnapshotSummary, PublicConfig, ProviderConfig, LlmCallStatus, LlmCallDetail, LlmCallList, ScenarioDefinition, ScenarioInput, ScenarioSummary } from '@worldsim/shared'
 
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -27,7 +27,7 @@ const scenarioPath = (id: string) => '/scenarios/' + encodeURIComponent(id)
 export const api = {
   scenarios: () => request<ScenarioSummary[]>('/scenarios'),
   scenario: (id: string) => request<ScenarioDefinition>(scenarioPath(id)),
-  saveScenario: (definition: ScenarioDefinition, id?: string) => id
+  saveScenario: (definition: ScenarioInput, id?: string) => id
     ? request<ScenarioSummary>(scenarioPath(id), 'PUT', definition)
     : request<ScenarioSummary>('/scenarios', 'POST', definition),
   games: () => request<GameSummary[]>('/games'),

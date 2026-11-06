@@ -8,6 +8,7 @@ import { ambientReaction, detailedLocationIds, npcResponse, runWorldPulse } from
 import { advanceRegion, observePopulation } from "./regional";
 import { createTurnClock, nextWorldOpportunity } from "./scheduler";
 import { readDocument } from "./reading";
+import { considerEncounter } from "./encounter";
 import { perceive, player, present, projectWorld, record } from "./state";
 
 export { projectWorld, perceive, knownFacts } from "./state";
@@ -58,7 +59,8 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     choice = chosen;
     minutes = Math.max(1, Math.min(proposal.minutes ?? chosen.minutes, world.rules.maxShort));
   }
-  const observations: Observation[] = [];
+  const observations: Observation[] = world.history.slice(offset).filter(e => e.source === "encounter")
+    .flatMap(event => perceive(event, world) ?? []);
   let speechEventId: string | undefined;
   let hearing: PublicTurn["hearing"];
   if (resolution.speech) {
@@ -108,6 +110,7 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
   let ticked = false;
   let sincePulse = offset;
   let previousTime = startTime;
+  let checkedNotices = offset;
   let horizon: {origin:string; destination?:string; locations:Set<string>} | undefined;
   function detailedHere() {
     const destination = king.journey?.to;
@@ -130,11 +133,25 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     previousTime = world.time;
     sincePulse = world.history.length;
     return [...crowd,...nearby,...distant];
-  }, (current,after) => nextWorldOpportunity(current,after,detailedHere()));
+  }, (current,after) => nextWorldOpportunity(current,after,detailedHere()), world.worldInfo ? async () => {
+    const notices = world.history.slice(checkedNotices).filter(e => e.locationId === king.locationId && e.time === world.time &&
+      (e.perception === "local" || e.perception === "public" || e.perception === "audible") &&
+      e.noticeWitnessIds?.includes(king.id) && e.changes.some(c => c.op === "event" && c.status === "executed"));
+    checkedNotices = world.history.length;
+    if (!notices.length) return [];
+    const encounter = await considerEncounter(world, provider, "event", undefined, notices);
+    const seen = encounter && perceive(encounter, world);
+    return seen ? [seen] : [];
+  } : undefined);
   let interrupted: boolean;
   let goalMet = false;
   if (trip) {
     interrupted = await clock.advance(duration,false,undefined,commitAction);
+    if (trip.op === "move" && king.locationId === trip.to) {
+      const encounter = await considerEncounter(world, provider, "arrival");
+      const observation = encounter && perceive(encounter, world);
+      if (observation) observations.push({...observation, time:world.time});
+    }
   } else if (resolution.reading) {
     interrupted = await readDocument(world, resolution.reading, observations, minutes, clock);
   } else if (resolution.waiting && resolution.eventNeedle) {

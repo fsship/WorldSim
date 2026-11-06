@@ -163,7 +163,8 @@ export interface TurnClock {
 }
 
 export function createTurnClock(world: WorldState, observations: Observation[], onPulse?: WorldPulse,
-  nextOpportunity: NextOpportunity = (_world, after) => nextPulse(after)): TurnClock {
+  nextOpportunity: NextOpportunity = (_world, after) => nextPulse(after),
+  onNotices?: () => Promise<Observation[]>): TurnClock {
   let pulsesLeft = MAX_TURN_PULSES;
   const opportunities = onPulse ? {next:nextOpportunity, remaining:() => pulsesLeft} : undefined;
   return {async advance(minutes, interruptible, match, atTarget) {
@@ -174,6 +175,11 @@ export function createTurnClock(world: WorldState, observations: Observation[], 
     for (const tick of checkpoints(world,target,opportunities,atTarget)) {
       append(observations,tick.visible,onPulse || interruptible === "reading" ? tick.at : undefined);
       const visible = tick.visible.map(o => o.text);
+      if (onNotices && tick.visible.length) {
+        const encounters = await onNotices();
+        append(observations, encounters, tick.at);
+        visible.push(...encounters.map(o => o.text));
+      }
       let sceneChanged = false;
       if (tick.pulse && onPulse) {
         pulsesLeft--;

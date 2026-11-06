@@ -4,6 +4,7 @@ import { captureUsage, emitCall, readResponseBody, type LlmCallRecorder } from '
 import {
   ActionIntentSchema, NarrationPlanSchema, ResolutionProposalSchema, turnPlanSchemaFor,
   ParseContextSchema, ResolveContextSchema, NarrateContextSchema, ProviderConfigSchema,
+  EncounterContextSchema, encounterProposalSchemaFor, type EncounterContext,
   DialogueContextSchema, DialogueDraftSchema, DialogueReviewContextSchema, DialogueReviewSchema,
   NpcActionContextSchema, npcActionProposalSchemaFor, type NpcActionContext,
   NpcActionReviewContextSchema, NpcActionReviewSchema, type NpcActionReviewContext,
@@ -12,7 +13,7 @@ import {
 } from '@worldsim/shared';
 
 const heardSpeech = 'history 按先后记录当前 NPC 亲历的发言。role=player 是玩家角色的话，其姓名与身份见 player，role=npc 是当前 NPC 自己说过的话，role=overheard 是当前 NPC 听到旁人所说的话，speaker 标明那个人的名字。可据此回答谁说了什么、回应上下文，但听见一个说法仅能证明有人这样说过。不得把旁人的话说成自己的经历或把传闻当成已经核实的事实。';
-const listeners = 'present 是当前可见的人。listeners 给出这次能听到当前 NPC 说话的人的名字。面向实际听众说话，只有一人能听到时也不要替其他在场者作答或声称别人听见了。';
+const listeners = 'worldInfo（如有）是这个世界的公开背景，可以据此使用当地常识，不能据此声称亲历场外事件。present 是当前可见的人。listeners 给出这次能听到当前 NPC 说话的人的名字。面向实际听众说话，只有一人能听到时也不要替其他在场者作答或声称别人听见了。';
 const preparedNotes = 'preparedNotes 是说话者亲自准备、现在仍在现场的公开文书条目，可以据此说明文书写了什么，不需要 factIds。纸面上的安排不能证明它已经发生，或解释缺席者的动机。';
 const jobLocation = 'location 是这句话说出口的地方。duty 如果给出了办事地点，应以它为依据回答工作在哪里进行；人在其他地方时也可以谈论自己的公务。不要把预定办理当作已经抵达或完成。';
 const witnessedNotices = 'recentNotices 是引擎记录的、当前 NPC 当时亲眼看见或听到的通报，time 是模拟时钟的分钟数，通报中的“你”指玩家角色。可据此回应相关追问并决定自己怎样反应，不能由现场动静推断未证实的原因或结局。仅复述现场通报无需 factIds；若同时传达了 facts 中的一条事实，仍需引用该事实 ID。';
@@ -29,10 +30,18 @@ const prompts = {
     'document 的 sectionTitles 只给出按顺序可见的目录。玩家用自己的说法指某项时，结合目录按含义选出唯一条目，在 reading.section 写它的序号（从 1 开始）。若所指主题并不在目录中，保留玩家所指的主题让引擎报告未找到；若可能对应多项，返回 clarify。目录不能用来推测正文。',
     '发言形如 {"kind":"speak","words":"早安","private":false}。单句 words 逐字复制实际说出的话。输入有多段独立引语时，先辨明每段是谁说的；words 改用数组，按原顺序逐字复制玩家亲口说出的每段完整台词（去掉外围引号）。玩家一边说一边环视旁人再继续说时，应包含两段台词。不要漏掉后半句、加入动作描写、别人的应答、被读的标题或转述的引语。只有一段是玩家说的就只选那一段。private 是必填布尔值，普通发言写 false，耳语写 true。',
     '发言可选 targetId 指向听者、courteous 表示明确的礼貌举动、reading 表示同时阅读的文书。普通音量点名也可被旁听；面向全场省略 targetId。明确呼唤了不在场的人时省略 targetId，另加 targetUnavailable:true；不要随意改收件人。',
+    'worldInfo 是公开世界设定，openingSituation 是玩家当时看见的开场，不能将过去的场景当成眼前事实。当 allowEncounter 为 true，且玩家此刻主动找人、用现场约定的方式呼叫他人（例如按下呼叫值班员的服务铃）、敲门呼人或向尚未在场的对象搭话，先返回 {"kind":"seekContact"} 让引擎确定相遇是否发生。明确要找另一名同职业者或请在场者帮忙找人时，判断所找的新对象。句中含引号时，source 必须逐字给出引语外实际寻人或搭话的动作。若是在与已经在场的人说话、仅提及他人、提出假设或转述寻人的经历，沿用普通行动类型。allowEncounter 缺席或为 false 时不得选 seekContact。',
     '{"kind":"order","words":"<玩家的原指令>","targetId":"<npc ID>","private":布尔,"orderId":"<可选 order ID>"}。words 必须是 text 中连续的原话，命令资格和是否执行由引擎、NPC 决定。只有指令确实要求执行列出的那项操作时才选 orderId。{"kind":"arrest","targetId":"<npc ID>"}。',
     '{"kind":"wait","rest":可选布尔,"minutes":可选整数,"clock":"可选 HH:mm","day":"可选 今天 或 明天","event":"可选所等事件"}。minutes 用非负分钟，和 event 同时出现时表示最多等待多久。clock 只用于等到某个时刻，不能与 minutes 或 event 同用；day 只配 clock。不把笼统等候改为长时间等待。',
     'previousWait 表示刚被打断的等待。玩家想继续原来的等待时返回 {"kind":"wait","resume":true}，引擎会接回原目标和剩余时间。如果玩家明确改等另一件事或重新指定时长，按新目标解释。没有 previousWait 时，笼统等候只算短等待。',
     '{"kind":"attempt","activity":"listen|perform|general"} 表示倾听、表演和其他可尝试的开放行动。{"kind":"assert"} 表示试图以一句自述改变客观事实。{"kind":"clarify"} 表示无法确定玩家要做什么。{"kind":"unavailable","subject":"item|place|document|person"} 表示需要的对象此刻不可用。',
+  ].join('\n'),
+  encounter: [
+    '你为开放剧本判断此刻是否实际遇到一名新人物。worldInfo 是作者的世界设定，situation 是开局处境；结合当前 location、time、recent 中已经观察到的动静、player 身份与 present 中实际在场的人判断。只依据当前场景作决定，开局处境不能证明异地或后续时刻有人在场。',
+    'opening 是开场，arrival 是抵达，contact 是玩家主动找人或搭话。event 表示当前地点同一时刻发生了一批玩家亲历的通报，recent 按发生顺序列出这一批。阅读整批，找出实际到来且此刻仍在眼前的新人物；随后的钟声等环境变化不消除已经发生的到场，如果此人随后离开则不能与其相遇。天气、机器的动静、提及远方或未来的人都不应凭空生成角色。',
+    'input 只说明玩家尝试做了什么，不证明要找的人存在。明确寻找另一名同职业者时，可以在已有同职业的人在场时新遇一人；请求在场者帮忙找别人，要判断所找的新对象，而非重复生成帮忙的人。无人、没有接近的契机、正在和已有对象交谈、谈论远方人物或猜想他人时，返回 {"kind":"none"}。模型只为此刻面对面的相遇补充人物，无需每次触发都安排人出现。',
+    '若眼下确实适合相遇，只返回 {"kind":"npc","name":"称呼","role":"身份","duty":"公开职责"}，可另给 goal 作为本人私下的一个普通目标。名称和身份要简短且符合时代与文化，不与玩家及在场人物同名。明确向已有身份的人求助时，仅当所需身份符合此地才选择它。不要用无关的陌生人冒充指定人物。',
+    '只给新人物一个与场景相符的身份与职责，不编写台词、玩家反应、过去经历、调查结论、关键剧情结果、世界秘密、物品或超常能力。不输出 ID、位置、事件、状态变更或其他字段。',
   ].join('\n'),
   parse: '你是行动解析器。只解析玩家明确尝试的一件事，不执行，不补充下一步。发言、声称与客观事实分开。独立的直接引语，或引语前后带一人称说话归属（我不满地回复、我对某人说、我追问道），按 speak 解析。语气仅修饰说话方式。第三人转述、假设和否定不能替玩家授权发言。听者取自引语外明确指向的称呼，未点名时省略 target。引语里提到的人物或行动只是话题。单独的直接提问如“有哪些消息？”也可以是 speak；仅有问号的行动请求仍需按其含义解析。返回 JSON 对象 {kind,target?,item?,minutes?,clock?}，不要返回 null 或其他字段。kind 仅可为 look、move、speak、investigate、order、arrest、use、wait、rest、wait_event、assert、attempt。选择实体时使用玩家提到的原词，不猜测不明确的目标。等待时长使用分钟，休息至几点使用 HH:mm。未明确或含混的行动用 attempt。',
   resolve: '你是世界行动裁决器。以角色能力、环境和玩家明确行动为依据，从 options 选择一个合理的即时结果。返回 JSON 对象 {optionId,minutes?}，optionId 必须来自 options，分钟仅为建议。不得增加事实、计划、人物、物品、行动或变更字段。',
@@ -207,6 +216,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       return this.complete('matchWait', context.waitEvidence, z.object({optionId:z.enum(['met', 'continue'])}).strict());
     }
     return this.complete('resolve', context, ResolutionProposalSchema);
+  }
+  encounter(data: EncounterContext) {
+    const context = EncounterContextSchema.parse(data);
+    return this.complete('encounter', context, encounterProposalSchemaFor(context));
   }
   async decideNpcAction(data: NpcActionContext) {
     const context = NpcActionContextSchema.parse(data);

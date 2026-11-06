@@ -1,5 +1,5 @@
 import {
-  ScenarioDefinitionSchema, WorldStateSchema, type Character, type ScenarioDefinition, type WorldState,
+  ScenarioDefinitionSchema, WorldStateSchema, type Character, type ScenarioDefinition, type ScenarioInput, type WorldState,
 } from '@worldsim/shared';
 
 function character(person:ScenarioDefinition['player'] & {duty?:string}, id:string, kind:Character['kind']): Character {
@@ -12,7 +12,7 @@ function character(person:ScenarioDefinition['player'] & {duty?:string}, id:stri
   };
 }
 
-export function createCustomScenario(scenarioId:string, gameId:string, definition:ScenarioDefinition): WorldState {
+export function createCustomScenario(scenarioId:string, gameId:string, definition:ScenarioInput): WorldState {
   const draft = ScenarioDefinitionSchema.parse(definition);
   const startTime = draft.startTime ?? 8 * 60;
   const player = character(draft.player, 'player', 'player');
@@ -39,6 +39,7 @@ export function createCustomScenario(scenarioId:string, gameId:string, definitio
   }));
   return WorldStateSchema.parse({
     id:gameId, scenario:draft.title, scenarioId, version:0, time:startTime, locations, characters, history, queue,
+    ...(draft.worldInfo ? {worldInfo:draft.worldInfo} : {}),
     rules:{maxWait:720, maxShort:10, discoveries:[], testimonies:[], orders:[], arrestAuthority:'拘押权限', arrestEvidence:[], useNpcGoals:true},
     items:[], facts:[], variables:{},
   });

@@ -14,6 +14,7 @@ export function Status({ state }: { state: PublicState }) {
       <Heading name="clock" label="游戏时间"/>
       <div className="clock-reading"><strong>{timeText(state.time)}</strong><span>{dayText(state.time)}</span></div>
     </section>
+    {state.worldInfo && <details className="status-section world-info"><summary>世界信息</summary><p>{state.worldInfo}</p></details>}
     <section className="status-section">
       <Heading name="user" label="玩家角色"/>
       <div className="identity"><div className="identity-icon"><Icon name={state.scenarioId === 'palace' ? 'crown' : 'user'} size={24}/></div>

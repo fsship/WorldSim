@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GameView, ScenarioDefinition, ScenarioSummary } from '@worldsim/shared'
+import type { GameView, ScenarioDefinition, ScenarioInput, ScenarioSummary } from '@worldsim/shared'
 import { api, errorText } from './api'
 import { Icon } from './Icon'
 import { ScenarioEditor } from './ScenarioEditor'
@@ -54,7 +54,7 @@ export function ScenarioLibrary({ busy, setBusy, onStart }: Props) {
       setEditor({ id: selected, definition })
     })
   }
-  function save(definition: ScenarioDefinition) {
+  function save(definition: ScenarioInput) {
     void perform(async () => {
       const saved = await api.saveScenario(definition, editor?.id)
       setScenarios(prior => [...(prior ?? []).filter(s => s.id !== saved.id), saved])

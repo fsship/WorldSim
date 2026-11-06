@@ -156,6 +156,7 @@ export function npcContext(world: WorldState, npc: Character, input: string, dec
   const duty = community && workplace ? "所在群体的事务是"+community.work.task+"，办理地点在"+workplace.name+"。" : npc.publicDuty;
   return DialogueContextSchema.parse({
     speaker:{name:npc.name, role:npc.role}, player:{name:king.name, role:king.role},
+    ...(world.worldInfo ? {worldInfo:world.worldInfo} : {}),
     location:room?.name, currentTime:world.time,
     ...(surroundings && !privateText(surroundings) ? {surroundings:surroundings.slice(0,800)} : {}),
     ...(duty && !privateText(duty) ? {duty:duty.slice(0,240)} : {}),
@@ -198,7 +199,7 @@ export async function writeNpcReply(world: WorldState, npc: Character, input: st
       // conversation itself. This pass cannot deliver or teach a world fact.
       if (attempt === 2 && !excerpt) {
         privateText = privateGuard(world, []);
-        sources = {...context, facts:[], duty:undefined, surroundings:undefined, recentNotices:undefined, preparedNotes:undefined,
+        sources = {...context, facts:[], duty:undefined, worldInfo:undefined, surroundings:undefined, recentNotices:undefined, preparedNotes:undefined,
           input:privateText(context.input) ? "（提到了当前无法核实的消息）" : context.input,
           decision:"这次只依据亲耳听到的对话答复。可复述谁说过什么，也可表示自己无从证实。请用一句自己的话回应，不报告世界消息。",
           history:context.history.filter(line => !privateText(line.text))};

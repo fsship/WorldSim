@@ -29,6 +29,7 @@ export type PublicTurn = z.infer<typeof PublicTurnSchema>;
 const entity = z.object({ id: nonempty, name: nonempty }).strict();
 export const PublicStateSchema = z.object({
   id: nonempty, title: nonempty, scenarioId: nonempty.optional(), time: minute, version: minute, opening: nonempty,
+  worldInfo: z.string().trim().min(1).max(2000).optional(),
   openingUsedFallback: z.boolean().optional(),
   openingRetryable: z.boolean().optional(),
   openingNotice: z.string().optional(),
@@ -92,7 +93,10 @@ export const ParseContextSchema = z.object({
   text: ActionTextSchema, location: nonempty, exits: z.array(nonempty),
   people: z.array(nonempty), items: z.array(nonempty),
   referents: z.array(parseReferentSchema).optional(),
+  allowEncounter: z.boolean().optional(),
   surroundings: z.string().trim().max(800).optional(),
+  worldInfo: z.string().trim().min(1).max(2000).optional(),
+  openingSituation: z.string().trim().min(1).max(1200).optional(),
   lastSpeakerId: referenceText.optional(), lastDocumentId: referenceText.optional(), lastItemId: referenceText.optional(),
   previousWait: PendingWaitSchema.optional(),
 }).strict();
@@ -116,6 +120,7 @@ const spokenWords = z.union([ActionTextSchema, z.array(ActionTextSchema).min(1)
 export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('clarify')}).strict(),
   z.object({kind:z.literal('assert')}).strict(),
+  z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
@@ -199,6 +204,9 @@ export function turnPlanSchemaFor(context: ParseContext) {
     return false;
   };
   return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
+    if (plan.kind === 'seekContact' && !context.allowEncounter) {
+      ctx.addIssue({code:'custom',path:['kind'],message:'当前情境未开放寻人'});
+    }
     if (plan.kind === 'speak') {
       const words = verifiedSpeech(context, plan.words);
       if (words === undefined) ctx.addIssue({code:'custom',path:['words'],message:'发言必须按原序引用玩家的原话'});
@@ -245,6 +253,32 @@ export type ResolutionProposal = z.infer<typeof ResolutionProposalSchema>;
 const participant = z.object({
   name: z.string().trim().min(1).max(160), role: z.string().trim().min(1).max(160),
 }).strict();
+export const EncounterContextSchema = z.object({
+  trigger: z.enum(['opening', 'arrival', 'contact', 'event']),
+  worldInfo: z.string().trim().min(1).max(2000),
+  situation: z.string().trim().min(1).max(1200),
+  location: z.object({name:referenceText, description:z.string().trim().min(1).max(4000)}).strict(),
+  player: participant, present: z.array(participant).max(64), time: minute,
+  input: ActionTextSchema.optional(), recent: z.array(ActionTextSchema).max(24).optional(),
+}).strict();
+export type EncounterContext = z.infer<typeof EncounterContextSchema>;
+
+const encounterIdentity = z.string().trim().min(1).max(60)
+  .regex(/^[\p{L}\p{N}][\p{L}\p{M}\p{N}\p{Pd} ·・.'’_（）()\/]*$/u, '人物称呼应为单行姓名或身份');
+const encounterNote = z.string().trim().min(1).max(200).regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>]+$/u);
+export const EncounterProposalSchema = z.discriminatedUnion('kind', [
+  z.object({kind:z.literal('none')}).strict(),
+  z.object({kind:z.literal('npc'), name:encounterIdentity, role:encounterIdentity,
+    duty:encounterNote, goal:encounterNote.optional()}).strict(),
+]);
+export type EncounterProposal = z.infer<typeof EncounterProposalSchema>;
+
+export function encounterProposalSchemaFor(context: EncounterContext) {
+  const canonicalName = (name: string) => name.normalize('NFKC').toLowerCase();
+  const presentNames = new Set([context.player, ...context.present].map(person => canonicalName(person.name)));
+  return EncounterProposalSchema.transform((proposal):EncounterProposal =>
+    proposal.kind === 'npc' && presentNames.has(canonicalName(proposal.name)) ? {kind:'none'} : proposal);
+}
 const factId = z.string().trim().min(1).max(160);
 const dialogueLineSchema = z.discriminatedUnion('role', [
   z.object({ role: z.literal('player'), text: ActionTextSchema }).strict(),
@@ -258,6 +292,7 @@ export const DialogueVerdictSchema = z.object({
 }).strict();
 export const DialogueContextSchema = z.object({
   speaker: participant, player: participant,
+  worldInfo: z.string().trim().min(1).max(2000).optional(),
   location: z.string().trim().min(1).max(160), currentTime:minute.optional(), present: z.array(participant).max(32),
   listeners: z.array(participant.shape.name).optional(),
   surroundings: z.string().trim().max(800).optional(), duty: z.string().trim().max(240).optional(),
@@ -272,7 +307,7 @@ export const DialogueContextSchema = z.object({
 export type DialogueContext = z.infer<typeof DialogueContextSchema>;
 
 export const NpcActionContextSchema = DialogueContextSchema.pick({
-  player: true, location: true, surroundings: true, duty: true, present: true, listeners: true, facts: true, history: true, recentNotices: true,
+  player: true, worldInfo: true, location: true, surroundings: true, duty: true, present: true, listeners: true, facts: true, history: true, recentNotices: true,
   input: true, decision: true, currentTime:true,
 }).extend({
   trigger: z.enum(['opening', 'addressed', 'ambient']),
@@ -346,6 +381,7 @@ export const NarrationPlanSchema = z.object({
 export type NarrationPlan = z.infer<typeof NarrationPlanSchema>;
 export interface LLMProvider {
   interpret?(context: ParseContext): Promise<TurnPlan>;
+  encounter?(context: EncounterContext): Promise<EncounterProposal>;
   parse(context: ParseContext): Promise<ActionIntent>;
   resolve(context: ResolveContext): Promise<ResolutionProposal>;
   decideNpcAction(context: NpcActionContext): Promise<NpcActionProposal>;

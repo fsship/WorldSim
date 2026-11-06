@@ -9,18 +9,21 @@ import { createProvider } from '../packages/llm/src';
 import { createPalace } from '../packages/scenarios/src';
 import { ProviderConfigSchema, WorldStateSchema, type LLMProvider, type NpcActionContext } from '../packages/shared/src';
 
-export function liveFixture(until:number, instrument:(provider:LLMProvider)=>LLMProvider = p => p) {
+export function readLiveConfig() {
   const root = fileURLToPath(new URL('../',import.meta.url));
   if (existsSync(resolve(root,'.env'))) process.loadEnvFile(resolve(root,'.env'));
   const settings = new DatabaseSync(resolve(root,process.env.DATABASE_PATH || 'data/worldsim.sqlite'),{readOnly:true});
-  let provider:LLMProvider;
   try {
     const row = settings.prepare('SELECT config FROM provider_settings WHERE id=1').get();
     assert.ok(typeof row?.config === 'string','请先保存真实模型配置。');
     const config = ProviderConfigSchema.safeParse(JSON.parse(row.config));
     assert.ok(config.success && config.data.mode === 'openai','请先选择真实模型。');
-    provider = createProvider(config.data);
+    return config.data;
   } finally { settings.close(); }
+}
+
+export function liveFixture(until:number, instrument:(provider:LLMProvider)=>LLMProvider = p => p) {
+  const provider = createProvider(readLiveConfig());
   const seed = createPalace('live-fixture');
   const publicFacts = seed.facts.filter(f => f.type === 'public');
   const compact = (s:string) => s.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{P}\p{Cf}]/gu,'');

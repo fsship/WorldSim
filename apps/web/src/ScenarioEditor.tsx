@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import type { ScenarioDefinition } from '@worldsim/shared'
+import type { ScenarioDefinition, ScenarioInput } from '@worldsim/shared'
+import { defaultScenarioSetup } from '@worldsim/shared/scenario-setup'
 import { Icon } from './Icon'
 import { timeText } from './api'
 
@@ -11,8 +12,7 @@ function emptyLocation(): Location {
   return { id: 'loc-' + crypto.randomUUID(), name: '', description: '' }
 }
 function emptyDefinition(): ScenarioDefinition {
-  const location = emptyLocation()
-  return { title: '', opening: '', locations: [location], player: { name: '', role: '', locationId: location.id }, npcs: [] }
+  return { title: '', worldInfo: '', opening: '', ...defaultScenarioSetup(), npcs: [] }
 }
 function PlaceSelect({ locations, value, onChange, label = '起始地点' }: {
   locations: Location[], value: string, onChange: (id: string) => void, label?: string
@@ -42,9 +42,10 @@ function replaceAt<T>(list: T[], index: number, value: T) {
 }
 
 export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
-  initial?: ScenarioDefinition, busy: boolean, error: string, onSave: (value: ScenarioDefinition) => void, onCancel: () => void
+  initial?: ScenarioDefinition, busy: boolean, error: string, onSave: (value: ScenarioInput) => void, onCancel: () => void
 }) {
   const [draft, setDraft] = useState<ScenarioDefinition>(() => initial ?? emptyDefinition())
+  const [dynamic, setDynamic] = useState(() => !initial || initial.worldInfo !== undefined)
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => { heading.current?.focus() }, [])
   const [validation, setValidation] = useState('')
@@ -67,14 +68,28 @@ export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
     if (!unique([draft.player, ...draft.npcs].map(person => person.name))) { setValidation('请为每个角色填写不同的姓名。'); return }
     const startClock = String(new FormData(e.currentTarget).get('startClock'))
     const [hour, minute] = startClock.split(':').map(Number)
-    setValidation(''); onSave({ ...draft, startTime: hour * 60 + minute })
+    setValidation('')
+    onSave({ ...draft, worldInfo:dynamic ? draft.worldInfo : undefined,
+      title:dynamic && !draft.title.trim() ? undefined : draft.title, startTime: hour * 60 + minute })
   }
   return <form className="scenario-editor panel-form" onSubmit={submit}>
     <h3 ref={heading} tabIndex={-1}>{initial ? '编辑剧本' : '创建自定义剧本'}</h3>
     <fieldset className="editor-body" disabled={busy}>
-      <label className="field">剧本名称<input required maxLength={80} value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })}/></label>
-      <label className="field">开场叙述<textarea required rows={3} maxLength={1200} placeholder="故事从哪里开始？玩家此刻看到了什么？"
+      <label className="field">人物出场方式<select value={dynamic ? 'encounter' : 'fixed'} onChange={e => setDynamic(e.target.value === 'encounter')}>
+        <option value="encounter">相遇时由模型生成人物</option>
+        <option value="fixed">仅使用预设角色</option>
+      </select></label>
+      {dynamic && <label className="field">世界信息<textarea required rows={3} maxLength={2000}
+        placeholder="这个世界是什么样的？这里有哪些地方、势力或习惯？" value={draft.worldInfo ?? ''}
+        onChange={e => setDraft({ ...draft, worldInfo:e.target.value })}/></label>}
+      <label className="field">{dynamic ? '当下处境' : '开场叙述'}<textarea required rows={3} maxLength={1200} placeholder="故事从哪里开始？玩家此刻看到了什么？"
         value={draft.opening} onChange={e => setDraft({ ...draft, opening: e.target.value })}/></label>
+      <details className="scenario-details" open={!dynamic}>
+      <summary>{dynamic ? '更多设定（可选）' : '剧本设定'}</summary>
+      <div className="editor-body">
+      <label className="field">{dynamic ? '剧本名称（可选）' : '剧本名称'}<input required={!dynamic} maxLength={80}
+        placeholder={dynamic ? '留空将采用世界信息的开头命名' : undefined} value={draft.title}
+        onChange={e => setDraft({ ...draft, title: e.target.value })}/></label>
       <label className="field">开场时间<input type="time" name="startClock" step={60} required defaultValue={timeText(initial?.startTime ?? 480)}/></label>
       <section className="editor-section">
         <h4>地点</h4><p className="form-note">按路线顺序填写地点，玩家可在相邻两处之间往返。</p>
@@ -91,7 +106,7 @@ export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
       <section className="editor-section"><h4>玩家角色</h4>
         <CharacterFields actor={draft.player} locations={draft.locations} update={player => setDraft({ ...draft, player })}/>
       </section>
-      <section className="editor-section"><h4>非玩家角色</h4>
+      <section className="editor-section"><h4>{dynamic ? '预设角色（可选）' : '非玩家角色'}</h4>
         {draft.npcs.map((actor, i) => <fieldset className="editor-block" key={i} aria-label={'非玩家角色 ' + (i + 1)}>
           <CharacterFields actor={actor} npc locations={draft.locations} update={value => setDraft({ ...draft, npcs: replaceAt(draft.npcs, i, value) })}/>
           <button type="button" className="text-button" onClick={() => setDraft({ ...draft, npcs: draft.npcs.filter((_, n) => n !== i) })}>移除角色</button>
@@ -112,6 +127,8 @@ export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
         <button type="button" className="secondary small" disabled={events.length >= 24}
           onClick={() => setDraft({ ...draft, events: [...events, { afterMinutes: 15, locationId: draft.player.locationId, text: '' }] })}><Icon name="plus" size={14}/>添加事件</button>
       </section>
+      </div>
+      </details>
     </fieldset>
     {initial && <p className="form-note">保存后的修改会在下次用此剧本新建游戏时生效。</p>}
     {(validation || error) && <p className="error-text" role="alert">{validation || error}</p>}
