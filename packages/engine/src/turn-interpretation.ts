@@ -28,6 +28,9 @@ function sceneContext(world: WorldState, king: Character, text: string): ParseCo
     ...places.map(({id,name,aliases}) => ({kind:"place" as const,id,name,aliases})),
     ...nearby.map(({id,name,aliases}) => ({kind:"npc" as const,id,name,aliases})),
     ...items.map(({id,name,aliases}) => ({kind:"item" as const,id,name,aliases,carried:king.inventory.includes(id)})),
+    ...visibleSceneState(world).flatMap(entry => entry.objectId ? [{
+      kind:"item" as const,id:entry.objectId,name:entry.name,aliases:[],carried:entry.scope === "held",
+    }] : []),
     ...docs.map(({id,name,aliases,entries}) => ({
       kind:"document" as const, id, name, aliases, sectionTitles:entries.map(entry => entry.title),
     })),
@@ -98,7 +101,21 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
     ({intent, plan, resolution:refused(text)});
   const run = (intent: ActionIntent, args: Omit<PlayerInput, "intent"> = {}, meaning: ActionMeaning = {}, words?: string): Interpretation =>
     ({intent, plan, words, resolution:adjudicate(world, context.text, intent, {intent, ...args}, meaning)});
+  const move = (to:string, using?:string) => {
+    const result = run({kind:"move",target:to},{movement:{kind:"destination",target:to}});
+    if (!using) return result;
+    const asset = visibleSceneState(world).find(entry => entry.objectId === using);
+    if (!asset) return rejected("出行物品不在这里。");
+    const travel = result.resolution.candidates[0];
+    const change = travel.changes.find(c => c.op === "move");
+    if (change?.op === "move") {
+      change.using = using;
+      travel.lines[0].text = "你使用" + asset.name + "来到" + world.locations.find(l=>l.id === to)!.name + "。";
+    }
+    return result;
+  };
   switch (plan.kind) {
+    case "itinerary":
     case "sequence": return {plan, intent:{kind:"attempt"}, resolution:{
       candidates:[{id:"sequence", status:"resolved", minutes:0, changes:[], lines:[]}],
       checks:["按顺序核对每一步的现场条件"], waiting:false, askModel:false,
@@ -123,7 +140,7 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
           locationId:from, perception:"addressed", recipients:[player(world).id],
           changes:[{op:"discoverPlace", from, to, name:plan.destination}]});
       }
-      const result = run({kind:"move", target:to}, {movement:{kind:"destination", target:to}});
+      const result = move(to,plan.kind === "explore" ? plan.using : undefined);
       const travel = result.resolution.candidates[0];
       const method = plan.kind === "ride" ? "刚刚到站的车" : plan.via?.method;
       if (method && travel.id === "travel") {
@@ -137,11 +154,23 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
       if (!offered("place", plan.destination)) return rejected(context.exits.length
         ? "从" + context.location + "可直达" + context.exits.join("、") + "。"
         : "这里没有可走的出口。", intent);
-      return run(intent, {movement:{kind:"destination",target:plan.destination}});
+      return move(plan.destination,plan.using);
     }
     case "item": {
       const intent: ActionIntent = {kind:"use", item:plan.itemId};
       if (!offered("item", plan.itemId)) return rejected("此刻无法接触到这件物品。", intent);
+      const asset = visibleSceneState(world).find(entry => entry.objectId === plan.itemId);
+      if (asset) {
+        if (plan.inventoryOnly && asset.scope !== "held") return rejected("这件物品不在你身上。",intent);
+        const take = plan.interaction === "handle_inspect" && asset.scope === "scene";
+        const {scope,name,value} = asset;
+        const changes:WorldState["history"][number]["changes"] = take ? [{op:"sceneStep",locationId:player(world).locationId,
+          clears:[{scope,name,value}],sets:[{scope:"held",name,value:"拿在手中（原状态：" + value.slice(0,140) + "）"}]}] : [];
+        const verb = take ? "拿起并查看" : plan.interaction === "use" ? "使用" : "查看";
+        return {intent, plan, resolution:{candidates:[{id:"item",status:"resolved",minutes:1,changes,
+          lines:[{kind:"world",text:"你" + verb + name + "。" + value + "。"}]}], askModel:false,
+          waiting:false,checks:["物品编号在当前场景可见"],itemId:asset.objectId}};
+      }
       const inspection = plan.interaction === "use" ? undefined : plan.interaction === "inspect" ? "look" : "handle";
       return run(intent,{object:{kind:"use",object:plan.itemId,inspection,inventoryOnly:plan.inventoryOnly}});
     }
@@ -196,7 +225,7 @@ function contactResult(plan: Extract<TurnPlan, {kind:"seekContact"}>, introduced
   }};
 }
 
-export async function interpretTurn(world: WorldState, text: string, provider: LLMProvider): Promise<Interpretation> {
+export async function interpretTurn(world: WorldState, text: string, provider: LLMProvider, segment?:ParseContext["segment"]): Promise<Interpretation> {
   const king = player(world);
   let context = sceneContext(world, king, text);
   const dynamic = !!world.worldInfo && king.condition === "healthy" && !king.journey;
@@ -205,10 +234,13 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
     context.allowExploration = true;
     context.localTime = world.time;
     context.allowRoutineEvent = true;
+  }
+  if (dynamic) {
     const notices = world.history.filter(event => event.time === world.time && event.locationId === king.locationId &&
       event.noticeWitnessIds?.includes(king.id) && event.changes.some(change => change.op === "event" && change.status === "executed"));
     if (notices.length) context.currentNotices = notices.slice(-8).map(({id,text}) => ({id,text}));
   }
+  if (segment) context.segment = segment;
   if (provider.interpret) {
     if (dynamic) context.allowEncounter = true;
     const plan = turnPlanSchemaFor(context).parse(await provider.interpret(structuredClone(context)));

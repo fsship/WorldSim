@@ -2,7 +2,7 @@ export type LlmCallStatus = 'success' | 'error';
 
 export const llmTaskLabels: Readonly<Record<string, string>> = {
   interpret: '理解玩家行动', parse: '解析玩家行动', resolve: '裁决行动', matchWait: '判断等待结果',
-  encounter: '生成相遇人物',
+  openingAssets:'登记开场物品', encounter: '生成相遇人物',
   regionalDuty: '处理地区公务', decideNpcAction: '生成角色行动', reviewNpcAction: '校验角色行动',
   dialogue: '生成角色台词', reviewDialogue: '校验角色台词', narrate: '整理回合叙事',
 };

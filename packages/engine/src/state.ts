@@ -58,7 +58,7 @@ export function perceive(event: WorldEvent, world: WorldState, observer = player
 export function visibleSceneState(world: WorldState) {
   const here = player(world).locationId;
   return world.sceneState.filter(entry => entry.scope === "held" || entry.locationId === here)
-    .map(({scope,name,value}) => ({scope,name,value}));
+    .map(({scope,name,value,objectId}) => ({scope,name,value,...(objectId ? {objectId} : {})}));
 }
 
 export function projectWorld(world: WorldState): PublicState {
@@ -89,7 +89,7 @@ export function projectWorld(world: WorldState): PublicState {
     player: { id: king.id, name: king.name, role: king.role, condition: {healthy:"安康", detained:"被拘押", dead:"死亡"}[king.condition],
       ...(king.goals.length ? {goal:king.goals.join("；")} : {}),
       items: [...carriedItems(world, king).map(({id, name, description}) => ({id, name, description})),
-        ...world.sceneState.filter(e => e.scope === "held").map(e => ({id:"held/"+e.name,name:e.name,description:e.value}))] },
+        ...world.sceneState.filter(e => e.scope === "held").map(e => ({id:e.objectId ?? "held/"+e.name,name:e.name,description:e.value}))] },
     facts: knownFacts(world, king).map(f => ({id: f.id, text: f.content.text})),
   };
 }
@@ -148,20 +148,34 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
           ambience:"四周暂时没有特别的动静。", exits:[origin.id]});
         break;
       }
+      case "openingAssets": {
+        if (world.version !== 0 || player(world).locationId !== change.locationId) throw new Error("无效的开场物品");
+        for (const [slot,asset] of change.assets.entries()) {
+          world.sceneState.push({...asset,locationId:change.locationId,objectId:world.id+"/opening-object/"+slot});
+        }
+        break;
+      }
       case "sceneStep": {
         const lead = player(world);
         if (!world.worldInfo || lead.condition !== "healthy" || lead.journey || change.locationId !== lead.locationId)
           throw new Error("当前无法执行场景动作。");
+        const removed:WorldState["sceneState"] = [];
         for (const entry of change.clears ?? []) {
           const index = world.sceneState.findIndex(old => old.scope === entry.scope && old.name === entry.name &&
             old.value === entry.value && (old.scope === "held" || old.locationId === change.locationId));
           if (index < 0) throw new Error("待移除的状态已改变。");
-          world.sceneState.splice(index,1);
+          removed.push(...world.sceneState.splice(index,1));
         }
-        for (const entry of change.sets) {
+        for (const [slot,entry] of change.sets.entries()) {
+          const previous = world.sceneState.find(old => old.scope === entry.scope && old.name === entry.name &&
+            (old.scope === "held" || old.locationId === change.locationId));
+          const transfer = removed.find(old => old.name === entry.name);
+          const origin = transfer ?? previous;
+          const objectId = origin?.objectId ?? (origin?.scope === "held" ? "held/"+origin.name : undefined) ??
+            (entry.scope === "held" || transfer?.scope === "held" ? world.id + "/object/" + (world.history.length+1) + "/" + slot : undefined);
           world.sceneState = world.sceneState.filter(old => !(old.scope === entry.scope && old.name === entry.name &&
             (old.scope === "held" || old.locationId === change.locationId)));
-          world.sceneState.push({...entry, locationId:change.locationId});
+          world.sceneState.push({...entry, locationId:change.locationId, ...(objectId ? {objectId} : {})});
         }
         break;
       }
@@ -178,6 +192,15 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
         if (c.condition !== "healthy" || (c.journey && (c.journey.to !== change.to || c.journey.arrivesAt !== world.time)) ||
             !world.locations.find(l => l.id === c.locationId)?.exits.includes(change.to))
           throw new Error("角色无法到达该地点。");
+        if (change.using) {
+          const asset = world.sceneState.find(e => e.objectId === change.using &&
+            (e.scope === "held" || e.locationId === c.locationId));
+          if (!asset || c.kind !== "player") throw new Error("出行物品不在场");
+          asset.locationId = change.to;
+          asset.value = "随你抵达" + world.locations.find(l => l.id === change.to)!.name;
+        }
+        if (c.kind === "player")
+          for (const asset of world.sceneState) if (asset.scope === "held") asset.locationId = change.to;
         delete c.journey;
         if (c.kind === "player") world.sceneState = world.sceneState.filter(entry => entry.scope !== "self");
         c.locationId = change.to;

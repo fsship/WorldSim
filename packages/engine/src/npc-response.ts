@@ -1,3 +1,4 @@
+import { openingAssetsSchema } from "@worldsim/shared";
 import type { Character, LLMProvider, NpcActionContext, Observation, WorldEvent, WorldState } from "@worldsim/shared";
 import { chooseNpcAction, commitNpcAction, type NpcOrder } from "./npc-action";
 import { replyFailureNotice, writeNpcReply } from "./npc-dialogue";
@@ -200,6 +201,21 @@ export async function prepareOpening(initial: WorldState, provider: LLMProvider)
   const world = structuredClone(initial);
   if (world.version !== 0 || world.history.some(e => e.source === "opening" &&
       (e.npcAction || e.dialogueSource || e.npcFailure || e.changes.some(c => c.op === "encounter")))) return world;
+  if (world.worldInfo && provider.openingAssets && !world.history.some(e => e.source === "opening-assets")) {
+    const lead = player(world);
+    const room = world.locations.find(l => l.id === lead.locationId)!;
+    const opening = world.history.find(e => e.source === "opening" && e.kind === "world")?.text ?? "";
+    const context = {opening, surroundings:room.description, worldInfo:world.worldInfo, location:room.name};
+    const result = openingAssetsSchema.parse(await provider.openingAssets(context));
+    const seen = new Set([...world.items.map(item => item.name), ...world.sceneState.map(entry => entry.name)]);
+    const assets = result.assets.filter(asset => {
+      if (seen.has(asset.name) || ![opening,room.description,context.worldInfo].some(s => s.includes(asset.evidence))) return false;
+      seen.add(asset.name);
+      return true;
+    }).map(({scope,name,value}) => ({scope,name,value}));
+    record(world,{source:"opening-assets",kind:"system",text:"开场物品已登记。",locationId:room.id,
+      perception:"private",recipients:[],changes:[{op:"openingAssets",locationId:room.id,assets}]});
+  }
   const seed = world.history.find(e => e.source === "opening" && e.kind === "npc" && perceive(e, world));
   let npc: Character | undefined;
   if (seed) {

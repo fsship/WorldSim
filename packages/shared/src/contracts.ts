@@ -93,16 +93,21 @@ const sceneLabel = z.string().trim().min(1).max(80);
 export const sceneValueSchema = z.object({
   scope:z.enum(['scene','self','held']), name:sceneLabel, value:referenceText,
 }).strict();
+export const openingAssetsSchema = z.object({assets:z.array(z.object({
+  name:sceneLabel, scope:z.enum(['scene','held']), value:referenceText, evidence:referenceText,
+}).strict()).max(32)}).strict();
+export type OpeningAssetContext = {opening:string; surroundings:string; location:string; worldInfo:string};
 const stepSchema = z.object({
   source:ActionTextSchema, text:z.string().trim().min(1).max(240),
   requires:z.array(sceneValueSchema).max(6).optional(),
   sets:z.array(sceneValueSchema).max(4).optional(), clears:z.array(sceneValueSchema).max(4).optional(), blocked:z.boolean().optional(),
 }).strict();
 export const ParseContextSchema = z.object({
+  segment:z.enum(['travel','local']).optional(),
   text: ActionTextSchema, location: nonempty, exits: z.array(nonempty),
   people: z.array(nonempty), items: z.array(nonempty),
   referents: z.array(parseReferentSchema).optional(),
-  sceneState:z.array(sceneValueSchema).optional(),
+  sceneState:z.array(sceneValueSchema.extend({objectId:referenceText.optional()})).optional(),
   localTime: minute.optional(),
   currentNotices:z.array(z.object({id:referenceText, text:nonempty}).strict()).max(8).optional(),
   allowRoutineEvent: z.boolean().optional(),
@@ -132,14 +137,17 @@ const spokenWords = z.union([ActionTextSchema, z.array(ActionTextSchema).min(1)
 // The interpreter selects an operation and its arguments. No variant can carry
 // effects, set a result, or author observable prose on behalf of the engine.
 export const TurnPlanSchema = z.discriminatedUnion('kind', [
+  z.object({kind:z.literal('itinerary'), steps:z.array(z.object({
+    kind:z.enum(['travel','local']), source:ActionTextSchema,
+  }).strict()).min(2).max(8)}).strict(),
   z.object({kind:z.literal('sequence'), steps:z.array(stepSchema).min(1).max(8)}).strict(),
   z.object({kind:z.literal('clarify')}).strict(),
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('ride'), noticeId:referenceText, destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('explore'), via:z.object({noticeId:referenceText, method:sceneLabel}).strict().optional(), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('explore'), using:referenceText.optional(), via:z.object({noticeId:referenceText, method:sceneLabel}).strict().optional(), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('move'), destination:referenceText, using:referenceText.optional(), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
     inventoryOnly:z.boolean().optional(), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('investigate'), focus:referenceText, source:ActionTextSchema.optional()}).strict(),
@@ -222,6 +230,24 @@ export function turnPlanSchemaFor(context: ParseContext) {
     return false;
   };
   return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
+    if ((plan.kind === 'move' || plan.kind === 'explore') && plan.using) {
+      const id = plan.using;
+      if (!context.sceneState?.some(entry => entry.objectId === id))
+        ctx.addIssue({code:'custom',message:'出行物品必须当前可接触'});
+    }
+    if (context.segment) {
+      const allowed = context.segment === 'local' ? ['sequence','item','clarify','unavailable'] :
+        ['move','explore','ride','clarify','unavailable'];
+      if (!allowed.includes(plan.kind)) ctx.addIssue({code:'custom',message:'按当前步骤类型执行'});
+    }
+    if (plan.kind === 'itinerary') {
+      const compact = (value:string) => value.replace(/[\s，,。；;！!、]/gu,'');
+      if (!context.sceneState || !plan.steps.some(s => s.kind === 'travel') || !plan.steps.some(s => s.kind === 'local') ||
+          compact(plan.steps.map(s => s.source).join('')) !== compact(context.text) ||
+          !plan.steps.every(s => containsActionSource(s.source)))
+        ctx.addIssue({code:'custom',message:'行程必须按原序覆盖玩家的移动和现场操作'});
+      return plan;
+    }
     if (plan.kind === 'sequence') {
       let offset = 0;
       for (const step of plan.steps) {
@@ -422,6 +448,7 @@ export const NarrationPlanSchema = z.object({
 }).strict();
 export type NarrationPlan = z.infer<typeof NarrationPlanSchema>;
 export interface LLMProvider {
+  openingAssets?(context:OpeningAssetContext):Promise<z.infer<typeof openingAssetsSchema>>;
   interpret?(context: ParseContext): Promise<TurnPlan>;
   encounter?(context: EncounterContext): Promise<EncounterProposal>;
   parse(context: ParseContext): Promise<ActionIntent>;

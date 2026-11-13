@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { captureUsage, emitCall, readResponseBody, type LlmCallRecorder } from './call-recording';
 import {
-  ActionIntentSchema, NarrationPlanSchema, ResolutionProposalSchema, turnPlanSchemaFor,
+  openingAssetsSchema, type OpeningAssetContext, ActionIntentSchema, NarrationPlanSchema, ResolutionProposalSchema, turnPlanSchemaFor,
   ParseContextSchema, ResolveContextSchema, NarrateContextSchema, ProviderConfigSchema,
   EncounterContextSchema, encounterProposalSchemaFor, type EncounterContext,
   DialogueContextSchema, DialogueDraftSchema, DialogueReviewContextSchema, DialogueReviewSchema,
@@ -19,6 +19,7 @@ const jobLocation = 'location 是这句话说出口的地方。duty 如果给出
 const witnessedNotices = 'recentNotices 是引擎记录的、当前 NPC 当时亲眼看见或听到的通报，time 是模拟时钟的分钟数，通报中的“你”指玩家角色。可据此回应相关追问并决定自己怎样反应，不能由现场动静推断未证实的原因或结局。仅复述现场通报无需 factIds；若同时传达了 facts 中的一条事实，仍需引用该事实 ID。';
 
 const prompts = {
+  openingAssets:'提取剧本开场与当前地点描述中明示、真实、在场的具体物品。返回 {"assets":[{"name":"物品中文名称","scope":"held 或 scene","value":"可见位置、归属及初始状态","evidence":"直接依据的连续原文"}]}。人物随身及装在随身容器中的物品分别列入 held；停放或固定在身边的设备等列入 scene。容器与其中具体物品分别登记。忽略假设、过去已离开的物品和异地物品，不猜测型号或权能。每件只列一次，名称简明；没有物品返回空数组。',
   interpret: [
     '把 text 理解为一个玩家回合，输出单个 JSON 对象。你负责理解自然语言中谁在做什么、指向哪个对象、实际说了什么。允许省略主语、倒装、口语和动作修饰。当前玩家可以用第一人称，也可以直接写动作。不得替玩家决定下一步。引擎计算结果、推进时间和执行状态变更。',
     '区分玩家当下的行动与询问、想象、假设、转述、否定、他人的行动及计划。引语中的行为只算话语。不要把物品名称后面的查看方式误作物品名，也不要把物品名的一部分或提到的旁人当作实际对象。支持 sceneState 的场景按下述 sequence 规则执行连续的日常动作，其他复合行动取玩家首先明确尝试的一步；拿起同一件物品并查看、交谈同时翻阅现场文书可以一次表达。',
@@ -30,6 +31,9 @@ const prompts = {
     'document 的 sectionTitles 只给出按顺序可见的目录。玩家用自己的说法指某项时，结合目录按含义选出唯一条目，在 reading.section 写它的序号（从 1 开始）。若所指主题并不在目录中，保留玩家所指的主题让引擎报告未找到；若可能对应多项，返回 clarify。目录不能用来推测正文。',
     '发言形如 {"kind":"speak","words":"早安","private":false}。单句 words 逐字复制实际说出的话。输入有多段独立引语时，先辨明每段是谁说的；words 改用数组，按原顺序逐字复制玩家亲口说出的每段完整台词（去掉外围引号）。玩家一边说一边环视旁人再继续说时，应包含两段台词。不要漏掉后半句、加入动作描写、别人的应答、被读的标题或转述的引语。只有一段是玩家说的就只选那一段。private 是必填布尔值，普通发言写 false，耳语写 true。',
     '发言可选 targetId 指向听者、courteous 表示明确的礼貌举动、reading 表示同时阅读的文书。普通音量点名也可被旁听；面向全场省略 targetId。明确呼唤了不在场的人时省略 targetId，另加 targetUnavailable:true；不要随意改收件人。',
+    'sceneState 内带 objectId 的条目是引擎登记的具体物品。查看、识别或观察它用 item/inspect 并引用 objectId；拿起、放下、操作、使用并改变状态时用 sequence，以原条目的 name、scope、value 写 requires/clears/sets（不要复制 objectId 到这些字段）。改变范围必须同名转移，保留物品本身的信息。整句含连续行动时先按 itinerary 分段，此时每段严格只给 kind 和 source，切勿附加 using、destination、steps 等字段。解释单独移动或 segment=travel 时输出 {"kind":"move","destination":"出口地点id","using":"所操纵的物品objectId"}，新地点使用 explore。随身物品自动随玩家同行。此类移动不需要到站通报；到达后再处理停放等动作。',
+    '当 sceneState 存在且玩家明确在同一输入里跨地图地点移动并实施现场动作，优先输出 {"kind":"itinerary","steps":[{"kind":"travel","source":"完整移动原文"},{"kind":"local","source":"完整现场操作原文"}]}。按原序分段，携带已有物品离开并往目的地属于同一 travel 段。保留所有字词，仅可略去段间标点；不可只选第一步。地点内部走动用 sequence。准备稍后做某事只是目的。segment 存在时只解析这一段，不得再输出 itinerary。travel 段用当前地点与出口裁定移动；local 段用抵达后的 sceneState 和 surroundings 生成 sequence。',
+    '查看后还要收起、移动或操作物品等复合动作必须用 sequence 执行全部步骤。查看步骤通过 requires 精确引用对应物品当前记录，在 text 陈述当前状态；单独查看才使用 item/inspect。物品进出容器时同步更新物品和容器状态。移动手持物到现场或拿起时，clears 旧范围并 sets 新范围，保持物品 name 完全相同。value 保留已有可识别特征，同时记录新的具体放置位置或使用状态。',
     'sceneState 出现时（含空数组）可执行本地日常行动。地点内部的位置、姿态、普通设施操作、日常服务和个人活动用 sequence。请求普通商品或服务也是场景动作；真正的对人发言、已有剧情规则、阅读与世界地图移动继续使用已有类型。地图地点内的设施不另建地图节点。',
     '输出 {"kind":"sequence","steps":[{"source":"原文动作片段","text":"面向玩家描述这一步完成的可见结果","requires":[{"scope":"self","name":"属性","value":"原值"}],"sets":[{"scope":"self","name":"属性","value":"新值"}]}]}。按实际顺序拆开所有明确动作，每步 source 必须是互不重叠的连续原文，勿添加未请求的后续动作。准备、打算做的事只算目的。状态消失或物品放下、用尽时，用 clears 列出要移除的原状态；放在现场的物品再写入 scene。requires、sets、clears 可省略。',
     'scene 是留在本地的设施或服务状态，self 是人物的现场位置、姿态或活动，held 是随玩家移动的物品。name 是稳定的属性名，同名新值覆盖旧值。每个产生后续影响的步骤必须写 sets。依赖已有状态必须在 requires 逐字复制 sceneState 或前面步骤写入的 scope/name/value。沿用已有名称，避免同义重复。玩家承接已有姿态、位置、物品或活动时，把对应状态列入新动作的 requires。已成立的背景从句不是要再做一次的动作，勿单列步骤或重复写入已有值。已完成的常规服务订单可在下一步按正常流程交付，更新订单并写入 held；未请求的下一步不提前代做。',
@@ -223,6 +227,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       return this.complete('matchWait', context.waitEvidence, z.object({optionId:z.enum(['met', 'continue'])}).strict());
     }
     return this.complete('resolve', context, ResolutionProposalSchema);
+  }
+  openingAssets(data:OpeningAssetContext) {
+    return this.complete('openingAssets', data, openingAssetsSchema);
   }
   encounter(data: EncounterContext) {
     const context = EncounterContextSchema.parse(data);

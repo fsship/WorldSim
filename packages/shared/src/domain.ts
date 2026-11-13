@@ -58,10 +58,11 @@ export const scheduledEventSchema = z.object({
 export type ScheduledEvent = z.infer<typeof scheduledEventSchema>;
 
 export const stateChangeSchema = z.discriminatedUnion("op", [
+  z.object({op:z.literal("openingAssets"),locationId:id,assets:z.array(z.object({scope:z.enum(["held","scene"]),name:id,value:id}).strict()).max(32)}).strict(),
   z.object({op:z.literal("sceneStep"), locationId:id, sets:z.array(sceneValueSchema).max(4), clears:z.array(sceneValueSchema).max(4).optional()}).strict(),
   z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute}).strict(),
   z.object({ op:z.literal("discoverPlace"), from:id, to:id, name:z.string().trim().min(1).max(80) }).strict(),
-  z.object({ op: z.literal("move"), actor: id, to: id }).strict(),
+  z.object({ op: z.literal("move"), actor: id, to: id, using:id.optional() }).strict(),
   z.object({ op:z.literal("meet"), group:id, locationId:id }).strict(),
   z.object({
     op:z.literal("encounter"), locationId:id, trigger:z.enum(["opening", "arrival", "contact", "event"]), cue:id.optional(),
@@ -137,7 +138,7 @@ export const worldStateSchema = z.object({
     .default([]),
   items: z.array(z.object({ ...sceneObject, locationId:id.optional(), description:id, appearance:id.optional() }).strict()),
   facts: z.array(worldFactSchema), queue: z.array(scheduledEventSchema),
-  sceneState:z.array(sceneValueSchema.extend({locationId:id})).default([]),
+  sceneState:z.array(sceneValueSchema.extend({locationId:id, objectId:id.optional()})).default([]),
   history: z.array(worldEventSchema), variables: vars,
 }).strict();
 export type WorldState = z.infer<typeof worldStateSchema>;

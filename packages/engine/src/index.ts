@@ -53,9 +53,43 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
   const text = ActionTextSchema.parse(input);
   // Zod constructs an independent working state. Nothing in the caller's save is touched by a failed turn.
   const world = WorldStateSchema.parse(previous);
-  const startTime = world.time, offset = world.history.length;
+  const initialOffset = world.history.length;
+  const first = await interpretTurn(world,text,provider);
+  if (first.plan?.kind !== "itinerary") {
+    const turn = await executeSegment(world,text,provider,first,initialOffset);
+    world.version = turn.version;
+    return {world,turn};
+  }
+  const offset = world.history.length;
+  const startTime = world.time;
+  const observations:Observation[] = [];
+  const narratives:string[] = [];
+  let completed = 0;
+  let status:GameTurn["resolution"]["status"] = "resolved";
+  for (const step of first.plan.steps) {
+    const before = world.history.length;
+    const action = await interpretTurn(world,step.source,provider,step.kind);
+    const turn = await executeSegment(world,step.source,provider,action,before);
+    narratives.push(turn.narrative);
+    observations.push(...turn.observations.map(o => ({...o,time:o.time ?? turn.endTime})));
+    if (turn.resolution.status !== "resolved") {
+      status = completed ? "uncertain" : turn.resolution.status;
+      break;
+    }
+    completed++;
+  }
+  const events = world.history.slice(offset);
+  const turn = GameTurnSchema.parse({version:++world.version,input:text,startTime,endTime:world.time,
+    intent:first.intent, plan:first.plan, resolution:{status,optionId:"itinerary",preconditions:first.resolution.checks},
+    events,changes:events.flatMap(e => e.changes),observations,narrative:narratives.join("\n")});
+  return {world,turn};
+}
+
+async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
+  interpretation:Awaited<ReturnType<typeof interpretTurn>>,offset:number):Promise<GameTurn> {
+  const startTime = world.time;
   const king = player(world), view = projectWorld(world);
-  const {intent, words, resolution, plan} = await interpretTurn(world, text, provider);
+  const {intent, words, resolution, plan} = interpretation;
   let choice = resolution.candidates[0];
   let minutes = choice.minutes;
   if (resolution.askModel) {
@@ -173,7 +207,10 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
         break;
       }
       const locationId = king.locationId;
+      const referenced = state.filter(entry => entry.objectId && step.requires?.some(need =>
+        need.scope === entry.scope && need.name === entry.name && need.value === entry.value));
       const event = record(world,{source:"action",kind:"world",text:step.text,locationId,
+        observedItemId:referenced.length === 1 ? referenced[0].objectId : undefined,
         recipients:[king.id],perception:"addressed",changes:[{op:"sceneStep",locationId,sets:step.sets ?? [], clears:step.clears}]});
       observations.push({kind:"world",text:event.text,time:event.time});
       completed++;
@@ -227,12 +264,11 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     observations.push(...await ambientReaction(world, world.history.slice(offset), provider, waited));
   }
   const narrative = await narrate(observations, provider);
-  world.version++;
   const events = world.history.slice(offset);
   const turn = GameTurnSchema.parse({
-    version:world.version, input:text, startTime, endTime:world.time, intent, plan, ...(hearing ? {hearing} : {}),
+    version:world.version+1, input:text, startTime, endTime:world.time, intent, plan, ...(hearing ? {hearing} : {}),
     resolution:{status:choice.status, optionId:choice.id, preconditions:resolution.checks},
     events, changes:events.flatMap(e => e.changes), observations, narrative,
   });
-  return {world, turn};
+  return turn;
 }
