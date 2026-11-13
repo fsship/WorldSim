@@ -24,11 +24,19 @@ it.each(["offline","semantic"])("默认地图可以前往第一站，存档恢�
   expect(again.world.locations).toHaveLength(2);
 });
 
+const service = Object.assign(new MockLLMProvider(), {
+  interpret:async (ctx:ParseContext):Promise<TurnPlan> => ({
+    kind:"wait", event:"公交车", ...(ctx.text.includes("两分钟") ? {minutes:2} : {}),
+    routine:{afterMinutes:5, notice:"一辆公交车停稳，打开了车门。"},
+  }),
+  resolve:async () => ({optionId:"met"}),
+});
+
 it("站台短等后读档，继续等到原班公交进站", async () => {
   const provider = new MockLLMProvider();
   const world = createCustomScenario("custom", "game", {worldInfo:"2026年的城市", opening:"你准备出门上班。"});
   const {world:station} = await runTurn(world, "前往公交站台", provider);
-  const short = await runTurn(station, "我等待公交车到来，最多两分钟", provider);
+  const short = await runTurn(station, "我等待公交车到来，最多两分钟", service);
   expect(short.turn.endTime).toBe(487);
   expect(short.turn.narrative).not.toContain("打开了车门");
   expect(short.world.queue).toHaveLength(1);
@@ -43,7 +51,7 @@ it("乘车引用读档后仍可见的到站事件，车辆尚未到站或事件�
   const offline = new MockLLMProvider();
   const initial = createCustomScenario("custom", "ride", {worldInfo:"2026年的城市", opening:"你准备出门上班。"});
   const station = await runTurn(initial, "我前往公交站台", offline);
-  const bus = await runTurn(station.world, "我等待公交车到来", offline);
+  const bus = await runTurn(station.world, "我等待公交车到来", service);
   const arrival = bus.turn.events.find(event => event.text.includes("车门打开") || event.text.includes("打开了车门"))!;
   const provider = Object.assign(new MockLLMProvider(), {
     interpret:async (context:ParseContext):Promise<TurnPlan> => {

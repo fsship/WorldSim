@@ -55,6 +55,12 @@ export function perceive(event: WorldEvent, world: WorldState, observer = player
   return event.speaker ? { kind, text: event.text, speaker: event.speaker } : { kind, text: event.text };
 }
 
+export function visibleSceneState(world: WorldState) {
+  const here = player(world).locationId;
+  return world.sceneState.filter(entry => entry.scope === "held" || entry.locationId === here)
+    .map(({scope,name,value}) => ({scope,name,value}));
+}
+
 export function projectWorld(world: WorldState): PublicState {
   const king = player(world);
   const location = world.locations.find(l => l.id === king.locationId);
@@ -82,7 +88,8 @@ export function projectWorld(world: WorldState): PublicState {
     present: present(world, king).map(c => ({id: c.id, name: c.name, role: c.role})),
     player: { id: king.id, name: king.name, role: king.role, condition: {healthy:"安康", detained:"被拘押", dead:"死亡"}[king.condition],
       ...(king.goals.length ? {goal:king.goals.join("；")} : {}),
-      items: carriedItems(world, king).map(({id, name, description}) => ({id, name, description})) },
+      items: [...carriedItems(world, king).map(({id, name, description}) => ({id, name, description})),
+        ...world.sceneState.filter(e => e.scope === "held").map(e => ({id:"held/"+e.name,name:e.name,description:e.value}))] },
     facts: knownFacts(world, king).map(f => ({id: f.id, text: f.content.text})),
   };
 }
@@ -141,6 +148,23 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
           ambience:"四周暂时没有特别的动静。", exits:[origin.id]});
         break;
       }
+      case "sceneStep": {
+        const lead = player(world);
+        if (!world.worldInfo || lead.condition !== "healthy" || lead.journey || change.locationId !== lead.locationId)
+          throw new Error("当前无法执行场景动作。");
+        for (const entry of change.clears ?? []) {
+          const index = world.sceneState.findIndex(old => old.scope === entry.scope && old.name === entry.name &&
+            old.value === entry.value && (old.scope === "held" || old.locationId === change.locationId));
+          if (index < 0) throw new Error("待移除的状态已改变。");
+          world.sceneState.splice(index,1);
+        }
+        for (const entry of change.sets) {
+          world.sceneState = world.sceneState.filter(old => !(old.scope === entry.scope && old.name === entry.name &&
+            (old.scope === "held" || old.locationId === change.locationId)));
+          world.sceneState.push({...entry, locationId:change.locationId});
+        }
+        break;
+      }
       case "depart": {
         const c = actor(change.actor);
         if (c.kind !== "player" || c.condition !== "healthy" || c.journey || change.arrivesAt <= world.time ||
@@ -155,6 +179,7 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
             !world.locations.find(l => l.id === c.locationId)?.exits.includes(change.to))
           throw new Error("角色无法到达该地点。");
         delete c.journey;
+        if (c.kind === "player") world.sceneState = world.sceneState.filter(entry => entry.scope !== "self");
         c.locationId = change.to;
         break;
       }

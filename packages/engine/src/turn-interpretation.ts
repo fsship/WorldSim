@@ -7,7 +7,7 @@ import { adjudicate, refused, type ActionMeaning, type Adjudication } from "./ac
 import { impliedListener, lastNpcLine } from "./conversation";
 import { crowdReferent, groupForContact } from "./crowd-contact";
 import { considerEncounter, offlineSeeksContact } from "./encounter";
-import { hasOpenMap, player, present, record } from "./state";
+import { visibleSceneState, hasOpenMap, player, present, record } from "./state";
 
 interface Interpretation {
   intent: ActionIntent;
@@ -99,6 +99,10 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
   const run = (intent: ActionIntent, args: Omit<PlayerInput, "intent"> = {}, meaning: ActionMeaning = {}, words?: string): Interpretation =>
     ({intent, plan, words, resolution:adjudicate(world, context.text, intent, {intent, ...args}, meaning)});
   switch (plan.kind) {
+    case "sequence": return {plan, intent:{kind:"attempt"}, resolution:{
+      candidates:[{id:"sequence", status:"resolved", minutes:0, changes:[], lines:[]}],
+      checks:["按顺序核对每一步的现场条件"], waiting:false, askModel:false,
+    }};
     case "clarify": return rejected("这句话还不能确定你现在要做什么。请说明这回合想亲自做的事。");
     case "assert": return run({kind:"assert"});
     case "look": return run({kind:"look"});
@@ -121,9 +125,10 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
       }
       const result = run({kind:"move", target:to}, {movement:{kind:"destination", target:to}});
       const travel = result.resolution.candidates[0];
-      if (plan.kind === "ride" && travel.id === "travel") {
+      const method = plan.kind === "ride" ? "刚刚到站的车" : plan.via?.method;
+      if (method && travel.id === "travel") {
         travel.minutes = world.rules.maxShort;
-        travel.lines[0].text = "你搭乘刚刚到站的车，抵达" + (matches[0]?.name ?? plan.destination) + "。";
+        travel.lines[0].text = "你搭乘" + method + "，抵达" + (matches[0]?.name ?? plan.destination) + "。";
       }
       return result;
     }
@@ -195,6 +200,7 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   const king = player(world);
   let context = sceneContext(world, king, text);
   const dynamic = !!world.worldInfo && king.condition === "healthy" && !king.journey;
+  if (dynamic) context.sceneState = visibleSceneState(world);
   if (dynamic && hasOpenMap(world)) {
     context.allowExploration = true;
     context.localTime = world.time;

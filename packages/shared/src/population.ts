@@ -52,6 +52,8 @@ export function roomDescription(world:WorldState,room:WorldState["locations"][nu
   const documents = readables.length ? "这里可以翻阅" + readables.map(doc => "《" + doc.name + "》").join("、") + "。" : "";
   const placed = placedItemsAt(world, room.id);
   const objects = placed.length ? "这里放着" + placed.map(item => item.name).join("、") + "。" : "";
-  return room.description + documents + objects + people.map(g => g.count + "名" + g.name + "在这里" +
+  const local = world.sceneState.filter(entry => entry.locationId === room.id && entry.scope === "scene")
+    .map(entry => entry.name + "：" + entry.value + "。").join("");
+  return room.description + documents + objects + local + people.map(g => g.count + "名" + g.name + "在这里" +
     (g.activity === "在本地活动" ? "活动。" : g.activity + "。")).join("");
 }

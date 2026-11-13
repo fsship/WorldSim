@@ -89,10 +89,20 @@ export type ParseReferent = z.infer<typeof parseReferentSchema>;
 export const PendingWaitSchema = z.object({
   until:minute, event:referenceText.optional(), rest:z.boolean().optional(),
 }).strict();
+const sceneLabel = z.string().trim().min(1).max(80);
+export const sceneValueSchema = z.object({
+  scope:z.enum(['scene','self','held']), name:sceneLabel, value:referenceText,
+}).strict();
+const stepSchema = z.object({
+  source:ActionTextSchema, text:z.string().trim().min(1).max(240),
+  requires:z.array(sceneValueSchema).max(6).optional(),
+  sets:z.array(sceneValueSchema).max(4).optional(), clears:z.array(sceneValueSchema).max(4).optional(), blocked:z.boolean().optional(),
+}).strict();
 export const ParseContextSchema = z.object({
   text: ActionTextSchema, location: nonempty, exits: z.array(nonempty),
   people: z.array(nonempty), items: z.array(nonempty),
   referents: z.array(parseReferentSchema).optional(),
+  sceneState:z.array(sceneValueSchema).optional(),
   localTime: minute.optional(),
   currentNotices:z.array(z.object({id:referenceText, text:nonempty}).strict()).max(8).optional(),
   allowRoutineEvent: z.boolean().optional(),
@@ -122,12 +132,13 @@ const spokenWords = z.union([ActionTextSchema, z.array(ActionTextSchema).min(1)
 // The interpreter selects an operation and its arguments. No variant can carry
 // effects, set a result, or author observable prose on behalf of the engine.
 export const TurnPlanSchema = z.discriminatedUnion('kind', [
+  z.object({kind:z.literal('sequence'), steps:z.array(stepSchema).min(1).max(8)}).strict(),
   z.object({kind:z.literal('clarify')}).strict(),
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('ride'), noticeId:referenceText, destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('explore'), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('explore'), via:z.object({noticeId:referenceText, method:sceneLabel}).strict().optional(), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
     inventoryOnly:z.boolean().optional(), source:ActionTextSchema.optional()}).strict(),
@@ -211,11 +222,22 @@ export function turnPlanSchemaFor(context: ParseContext) {
     return false;
   };
   return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
+    if (plan.kind === 'sequence') {
+      let offset = 0;
+      for (const step of plan.steps) {
+        const start = context.text.indexOf(step.source,offset);
+        if (!context.sceneState || start < 0 || !containsActionSource(step.source) ||
+            !outside.some(([a,b]) => a <= start && start + step.source.length <= b))
+          ctx.addIssue({code:'custom',message:'场景步骤必须依次引用玩家引语外的实际动作'});
+        offset = start + step.source.length;
+      }
+      return plan;
+    }
     if (plan.kind === 'wait' && plan.routine && (!context.allowRoutineEvent || plan.rest ||
         !(plan.event || (plan.resume && context.previousWait?.event))))
       ctx.addIssue({code:'custom',message:'只有当前场景可自然发生的等候事件可安排'});
-    if (plan.kind === 'ride') {
-      const {noticeId} = plan;
+    const noticeId = plan.kind === 'ride' ? plan.noticeId : plan.kind === 'explore' ? plan.via?.noticeId : undefined;
+    if (noticeId) {
       if (!context.currentNotices?.some(event => event.id === noticeId))
         ctx.addIssue({code:'custom',message:'乘车需要当前地点已目击的到站事件'});
     }

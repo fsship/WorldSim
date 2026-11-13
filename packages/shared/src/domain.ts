@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ActionIntentSchema, DialogueVerdictSchema, PendingWaitSchema, PublicTurnSchema, TurnPlanSchema } from "./contracts";
+import { sceneValueSchema, ActionIntentSchema, DialogueVerdictSchema, PendingWaitSchema, PublicTurnSchema, TurnPlanSchema } from "./contracts";
 import { PopulationGroupSchema } from "./population";
 
 const id = z.string().min(1);
@@ -58,6 +58,7 @@ export const scheduledEventSchema = z.object({
 export type ScheduledEvent = z.infer<typeof scheduledEventSchema>;
 
 export const stateChangeSchema = z.discriminatedUnion("op", [
+  z.object({op:z.literal("sceneStep"), locationId:id, sets:z.array(sceneValueSchema).max(4), clears:z.array(sceneValueSchema).max(4).optional()}).strict(),
   z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute}).strict(),
   z.object({ op:z.literal("discoverPlace"), from:id, to:id, name:z.string().trim().min(1).max(80) }).strict(),
   z.object({ op: z.literal("move"), actor: id, to: id }).strict(),
@@ -136,6 +137,7 @@ export const worldStateSchema = z.object({
     .default([]),
   items: z.array(z.object({ ...sceneObject, locationId:id.optional(), description:id, appearance:id.optional() }).strict()),
   facts: z.array(worldFactSchema), queue: z.array(scheduledEventSchema),
+  sceneState:z.array(sceneValueSchema.extend({locationId:id})).default([]),
   history: z.array(worldEventSchema), variables: vars,
 }).strict();
 export type WorldState = z.infer<typeof worldStateSchema>;

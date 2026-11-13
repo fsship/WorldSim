@@ -9,7 +9,7 @@ import { advanceRegion, observePopulation } from "./regional";
 import { createTurnClock, nextWorldOpportunity, scheduleEvent } from "./scheduler";
 import { readDocument } from "./reading";
 import { considerEncounter } from "./encounter";
-import { hasOpenMap, perceive, player, present, projectWorld, record } from "./state";
+import { visibleSceneState, perceive, player, present, projectWorld, record } from "./state";
 
 export { projectWorld, perceive, knownFacts } from "./state";
 export { scheduleEvent, cancelEvent, rescheduleEvent } from "./scheduler";
@@ -19,15 +19,6 @@ export { replyRecovery, retryDialogue, displayReplyRecovery } from "./recovery";
 export function projectTurn(turn: GameTurn): PublicTurn {
   const {version, input, startTime, endTime, observations, narrative, hearing} = turn;
   return {version, input, startTime, endTime, observations, narrative, ...(hearing ? {hearing} : {})};
-}
-
-function offlineRoutine(world: WorldState, view: ReturnType<typeof projectWorld>, condition: string) {
-  const timeOfDay = world.time % 1440;
-  if (hasOpenMap(world) && /(?:公交|公共汽车)(?:车)?(?:站台|站)$/.test(view.location.name) &&
-      /^(?:下一[班辆])?(?:公交车?|公共汽车)(?:进站|到站|抵达)?$/.test(condition) &&
-      !/停运|停驶|停班|取消公交/.test([world.worldInfo, view.opening, view.location.description].join(" ")) &&
-      timeOfDay >= 360 && timeOfDay < 1320)
-    return {afterMinutes:10 - timeOfDay % 10, notice:"一辆公交车驶入站台，停稳后打开了车门。"};
 }
 
 function scheduleRoutine(world: WorldState, routine: {afterMinutes:number; notice:string}) {
@@ -121,7 +112,7 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     record(world,{source:"departure", kind:"world", text:king.name + "离开了" + view.location.name + "。",
       perception:"addressed", recipients:present(world,king).filter(c => c.condition !== "dead").map(c => c.id),
       locationId:king.locationId, changes:[{op:"depart",actor:king.id,to:trip.to,arrivesAt:world.time + duration}]});
-  } else commitAction();
+  } else if (plan?.kind !== "sequence") commitAction();
   if (resolution.reading) {
     for (const observation of observations) observation.time = world.time;
   }
@@ -164,7 +155,35 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
   } : undefined);
   let interrupted: boolean;
   let goalMet = false;
-  if (trip) {
+  if (plan?.kind === "sequence") {
+    interrupted = false;
+    let completed = 0;
+    for (const step of plan.steps) {
+      const state = visibleSceneState(world);
+      const preconditions = [...step.requires ?? [], ...step.clears ?? []];
+      const missing = preconditions.find(need => !state.some(entry =>
+        entry.scope === need.scope && entry.name === need.name && entry.value === need.value));
+      if (step.blocked || missing || king.condition !== "healthy" || king.journey) {
+        const reason = missing ? "当前条件不满足：" + missing.name + "需要处于“" + missing.value + "”状态。" :
+          step.blocked ? step.text : "你现在无法继续。";
+        const event = record(world,{source:"action",kind:"system",text:reason,locationId:king.locationId,
+          recipients:[king.id],perception:"addressed",changes:[]});
+        observations.push({kind:"system",text:event.text,time:event.time});
+        choice.status = completed ? "uncertain" : "refused";
+        break;
+      }
+      const locationId = king.locationId;
+      const event = record(world,{source:"action",kind:"world",text:step.text,locationId,
+        recipients:[king.id],perception:"addressed",changes:[{op:"sceneStep",locationId,sets:step.sets ?? [], clears:step.clears}]});
+      observations.push({kind:"world",text:event.text,time:event.time});
+      completed++;
+      interrupted = await clock.advance(1,true);
+      if (interrupted) {
+        if (completed < plan.steps.length) choice.status = "uncertain";
+        break;
+      }
+    }
+  } else if (trip) {
     interrupted = await clock.advance(duration,false,undefined,commitAction);
     if (trip.op === "move" && king.locationId === trip.to) {
       const encounter = await considerEncounter(world, provider, "arrival");
@@ -175,8 +194,7 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     interrupted = await readDocument(world, resolution.reading, observations, minutes, clock);
   } else if (resolution.waiting && resolution.eventNeedle) {
     const condition = resolution.eventNeedle;
-    const routine = plan?.kind === "wait" ? plan.routine :
-      !provider.interpret ? offlineRoutine(world, view, condition) : undefined;
+    const routine = plan?.kind === "wait" ? plan.routine : undefined;
     if (routine && minutes > 0) scheduleRoutine(world, routine);
     interrupted = await clock.advance(minutes, true, async notices => {
       if (!plan) {
