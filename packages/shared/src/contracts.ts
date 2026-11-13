@@ -93,6 +93,9 @@ export const ParseContextSchema = z.object({
   text: ActionTextSchema, location: nonempty, exits: z.array(nonempty),
   people: z.array(nonempty), items: z.array(nonempty),
   referents: z.array(parseReferentSchema).optional(),
+  localTime: minute.optional(),
+  currentNotices:z.array(z.object({id:referenceText, text:nonempty}).strict()).max(8).optional(),
+  allowRoutineEvent: z.boolean().optional(),
   allowExploration: z.boolean().optional(),
   allowEncounter: z.boolean().optional(),
   surroundings: z.string().trim().max(800).optional(),
@@ -123,6 +126,7 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('ride'), noticeId:referenceText, destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('explore'), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
@@ -138,7 +142,8 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('arrest'), targetId:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({
     kind:z.literal('wait'), rest:z.boolean().optional(), minutes:minute.optional(), clock:ActionIntentSchema.shape.clock,
-    day:z.enum(['今天', '明天']).optional(), event:referenceText.optional(), resume:z.boolean().optional(), source:ActionTextSchema.optional(),
+    day:z.enum(['今天', '明天']).optional(), event:referenceText.optional(), resume:z.boolean().optional(),
+    routine:z.object({afterMinutes:z.number().int().min(1).max(1440), notice:z.string().trim().min(1).max(240)}).strict().optional(), source:ActionTextSchema.optional(),
   }).strict(),
   z.object({kind:z.literal('attempt'), activity:z.enum(['listen', 'perform', 'general']), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('unavailable'), subject:z.enum(['item', 'place', 'document', 'person'])}).strict(),
@@ -206,7 +211,15 @@ export function turnPlanSchemaFor(context: ParseContext) {
     return false;
   };
   return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
-    if (plan.kind === 'explore') {
+    if (plan.kind === 'wait' && plan.routine && (!context.allowRoutineEvent || plan.rest ||
+        !(plan.event || (plan.resume && context.previousWait?.event))))
+      ctx.addIssue({code:'custom',message:'只有当前场景可自然发生的等候事件可安排'});
+    if (plan.kind === 'ride') {
+      const {noticeId} = plan;
+      if (!context.currentNotices?.some(event => event.id === noticeId))
+        ctx.addIssue({code:'custom',message:'乘车需要当前地点已目击的到站事件'});
+    }
+    if (plan.kind === 'explore' || plan.kind === 'ride') {
       const destination = plan.destination;
       if (!context.allowExploration || !outside.some(([a,b]) => context.text.slice(a,b).includes(destination)))
         ctx.addIssue({code:'custom',message:'探索地点必须取自玩家本次行动，且当前地图允许探索'});

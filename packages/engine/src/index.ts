@@ -6,10 +6,10 @@ import { interpretTurn } from "./turn-interpretation";
 import { utterance, withinEarshot } from "./hearing";
 import { ambientReaction, detailedLocationIds, npcResponse, runWorldPulse } from "./npc-response";
 import { advanceRegion, observePopulation } from "./regional";
-import { createTurnClock, nextWorldOpportunity } from "./scheduler";
+import { createTurnClock, nextWorldOpportunity, scheduleEvent } from "./scheduler";
 import { readDocument } from "./reading";
 import { considerEncounter } from "./encounter";
-import { perceive, player, present, projectWorld, record } from "./state";
+import { hasOpenMap, perceive, player, present, projectWorld, record } from "./state";
 
 export { projectWorld, perceive, knownFacts } from "./state";
 export { scheduleEvent, cancelEvent, rescheduleEvent } from "./scheduler";
@@ -19,6 +19,25 @@ export { replyRecovery, retryDialogue, displayReplyRecovery } from "./recovery";
 export function projectTurn(turn: GameTurn): PublicTurn {
   const {version, input, startTime, endTime, observations, narrative, hearing} = turn;
   return {version, input, startTime, endTime, observations, narrative, ...(hearing ? {hearing} : {})};
+}
+
+function offlineRoutine(world: WorldState, view: ReturnType<typeof projectWorld>, condition: string) {
+  const timeOfDay = world.time % 1440;
+  if (hasOpenMap(world) && /(?:公交|公共汽车)(?:车)?(?:站台|站)$/.test(view.location.name) &&
+      /^(?:下一[班辆])?(?:公交车?|公共汽车)(?:进站|到站|抵达)?$/.test(condition) &&
+      !/停运|停驶|停班|取消公交/.test([world.worldInfo, view.opening, view.location.description].join(" ")) &&
+      timeOfDay >= 360 && timeOfDay < 1320)
+    return {afterMinutes:10 - timeOfDay % 10, notice:"一辆公交车驶入站台，停稳后打开了车门。"};
+}
+
+function scheduleRoutine(world: WorldState, routine: {afterMinutes:number; notice:string}) {
+  const locationId = player(world).locationId;
+  const pending = world.queue.filter(event => event.status === "pending");
+  // Give existing local notices priority, including a service scheduled before a short wait expired.
+  if (pending.length >= 256 || pending.some(event => event.locationId === locationId && event.type === "notice")) return;
+  scheduleEvent(world, {id:"routine-" + world.version + "-" + world.history.length, at:world.time + routine.afterMinutes,
+    type:"notice", locationId, perception:"local", text:routine.notice,
+    entities:[], condition:{}, recipients:[], effects:[], important:true, status:"pending"});
 }
 
 async function narrate(observations: Observation[], provider: LLMProvider) {
@@ -156,6 +175,9 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     interrupted = await readDocument(world, resolution.reading, observations, minutes, clock);
   } else if (resolution.waiting && resolution.eventNeedle) {
     const condition = resolution.eventNeedle;
+    const routine = plan?.kind === "wait" ? plan.routine :
+      !provider.interpret ? offlineRoutine(world, view, condition) : undefined;
+    if (routine && minutes > 0) scheduleRoutine(world, routine);
     interrupted = await clock.advance(minutes, true, async notices => {
       if (!plan) {
         goalMet = notices.some(text => text.includes(condition));

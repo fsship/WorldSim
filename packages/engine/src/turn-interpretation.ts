@@ -107,17 +107,25 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
         person:"你要找的人目前不在场。", document:"这里看不到你要读的那份文书。"};
       return rejected(notes[plan.subject]);
     }
+    case "ride":
     case "explore": {
       if (!context.allowExploration || !hasOpenMap(world)) return rejected("当前地点没有通往那里的出口。");
       const matches = movementLocations(world.locations, plan.destination);
-      if (matches.length === 1) return executeMeaning(world, context, {kind:"move", destination:matches[0].id});
-      if (matches.length) return rejected("这个称呼对应多个地点，请用地点全名。");
+      if (matches.length > 1) return rejected("这个称呼对应多个地点，请用地点全名。");
       const from = player(world).locationId;
-      const to = "explored-" + world.locations.length;
-      record(world, {source:"exploration", kind:"world", text:"从这里可以前往" + plan.destination + "。",
-        locationId:from, perception:"addressed", recipients:[player(world).id],
-        changes:[{op:"discoverPlace", from, to, name:plan.destination}]});
-      return run({kind:"move", target:to}, {movement:{kind:"destination", target:to}});
+      const to = matches[0]?.id ?? "explored-" + world.locations.length;
+      if (!matches.length) {
+        record(world, {source:"exploration", kind:"world", text:"从这里可以前往" + plan.destination + "。",
+          locationId:from, perception:"addressed", recipients:[player(world).id],
+          changes:[{op:"discoverPlace", from, to, name:plan.destination}]});
+      }
+      const result = run({kind:"move", target:to}, {movement:{kind:"destination", target:to}});
+      const travel = result.resolution.candidates[0];
+      if (plan.kind === "ride" && travel.id === "travel") {
+        travel.minutes = world.rules.maxShort;
+        travel.lines[0].text = "你搭乘刚刚到站的车，抵达" + (matches[0]?.name ?? plan.destination) + "。";
+      }
+      return result;
     }
     case "move": {
       const intent: ActionIntent = {kind:"move", target:plan.destination};
@@ -187,7 +195,14 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   const king = player(world);
   let context = sceneContext(world, king, text);
   const dynamic = !!world.worldInfo && king.condition === "healthy" && !king.journey;
-  if (dynamic && hasOpenMap(world)) context.allowExploration = true;
+  if (dynamic && hasOpenMap(world)) {
+    context.allowExploration = true;
+    context.localTime = world.time;
+    context.allowRoutineEvent = true;
+    const notices = world.history.filter(event => event.time === world.time && event.locationId === king.locationId &&
+      event.noticeWitnessIds?.includes(king.id) && event.changes.some(change => change.op === "event" && change.status === "executed"));
+    if (notices.length) context.currentNotices = notices.slice(-8).map(({id,text}) => ({id,text}));
+  }
   if (provider.interpret) {
     if (dynamic) context.allowEncounter = true;
     const plan = turnPlanSchemaFor(context).parse(await provider.interpret(structuredClone(context)));
