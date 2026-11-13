@@ -93,6 +93,7 @@ export const ParseContextSchema = z.object({
   text: ActionTextSchema, location: nonempty, exits: z.array(nonempty),
   people: z.array(nonempty), items: z.array(nonempty),
   referents: z.array(parseReferentSchema).optional(),
+  allowExploration: z.boolean().optional(),
   allowEncounter: z.boolean().optional(),
   surroundings: z.string().trim().max(800).optional(),
   worldInfo: z.string().trim().min(1).max(2000).optional(),
@@ -122,6 +123,7 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('explore'), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('move'), destination:referenceText, source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
     inventoryOnly:z.boolean().optional(), source:ActionTextSchema.optional()}).strict(),
@@ -204,6 +206,11 @@ export function turnPlanSchemaFor(context: ParseContext) {
     return false;
   };
   return TurnPlanSchema.transform((plan, ctx): TurnPlan => {
+    if (plan.kind === 'explore') {
+      const destination = plan.destination;
+      if (!context.allowExploration || !outside.some(([a,b]) => context.text.slice(a,b).includes(destination)))
+        ctx.addIssue({code:'custom',message:'探索地点必须取自玩家本次行动，且当前地图允许探索'});
+    }
     if (plan.kind === 'seekContact' && !context.allowEncounter) {
       ctx.addIssue({code:'custom',path:['kind'],message:'当前情境未开放寻人'});
     }

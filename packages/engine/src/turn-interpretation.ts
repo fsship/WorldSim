@@ -1,5 +1,5 @@
 import {
-  ActionIntentSchema, inspectableItems, readablesAt, readPlayerInput, roomDescription, spokenPlanWords, turnPlanSchemaFor,
+  movementLocations, readMovement, ActionIntentSchema, inspectableItems, readablesAt, readPlayerInput, roomDescription, spokenPlanWords, turnPlanSchemaFor,
   type ActionIntent, type Character, type LLMProvider, type ParseContext, type ParseReferent,
   type PlayerInput, type TurnPlan, type WorldState,
 } from "@worldsim/shared";
@@ -7,7 +7,7 @@ import { adjudicate, refused, type ActionMeaning, type Adjudication } from "./ac
 import { impliedListener, lastNpcLine } from "./conversation";
 import { crowdReferent, groupForContact } from "./crowd-contact";
 import { considerEncounter, offlineSeeksContact } from "./encounter";
-import { player, present, record } from "./state";
+import { hasOpenMap, player, present, record } from "./state";
 
 interface Interpretation {
   intent: ActionIntent;
@@ -107,6 +107,18 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
         person:"你要找的人目前不在场。", document:"这里看不到你要读的那份文书。"};
       return rejected(notes[plan.subject]);
     }
+    case "explore": {
+      if (!context.allowExploration || !hasOpenMap(world)) return rejected("当前地点没有通往那里的出口。");
+      const matches = movementLocations(world.locations, plan.destination);
+      if (matches.length === 1) return executeMeaning(world, context, {kind:"move", destination:matches[0].id});
+      if (matches.length) return rejected("这个称呼对应多个地点，请用地点全名。");
+      const from = player(world).locationId;
+      const to = "explored-" + world.locations.length;
+      record(world, {source:"exploration", kind:"world", text:"从这里可以前往" + plan.destination + "。",
+        locationId:from, perception:"addressed", recipients:[player(world).id],
+        changes:[{op:"discoverPlace", from, to, name:plan.destination}]});
+      return run({kind:"move", target:to}, {movement:{kind:"destination", target:to}});
+    }
     case "move": {
       const intent: ActionIntent = {kind:"move", target:plan.destination};
       if (!offered("place", plan.destination)) return rejected(context.exits.length
@@ -175,6 +187,7 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   const king = player(world);
   let context = sceneContext(world, king, text);
   const dynamic = !!world.worldInfo && king.condition === "healthy" && !king.journey;
+  if (dynamic && hasOpenMap(world)) context.allowExploration = true;
   if (provider.interpret) {
     if (dynamic) context.allowEncounter = true;
     const plan = turnPlanSchemaFor(context).parse(await provider.interpret(structuredClone(context)));
@@ -205,6 +218,14 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
   if (explicit?.waiting?.resume && context.previousWait) {
     const {intent,resolution} = executeMeaning(world, context, {kind:"wait", resume:true});
     return {intent,resolution};
+  }
+  if (context.allowExploration && explicit?.intent.kind === "move") {
+    // A stated future purpose does not add another stop to this trip.
+    const first = text.replace(/[，,]\s*(?:准备|打算)(?:去|到)[^，,。！？?！]+[。！]?$/u, "");
+    const trip = readMovement(first);
+    if (trip?.kind === "destination" && !trip.origin && /^[\p{L}\p{N}· -]{1,80}$/u.test(trip.target) &&
+        (first !== text || !movementLocations(world.locations, trip.target).length))
+      return executeMeaning(world, context, {kind:"explore", destination:trip.target});
   }
   const parsed = explicit?.reading ? explicit.intent : ActionIntentSchema.parse(await provider.parse(context));
   const intent = explicit?.intent ?? parsed;

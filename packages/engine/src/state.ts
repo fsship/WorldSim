@@ -10,6 +10,13 @@ export function player(world: WorldState) {
   return players[0];
 }
 
+// Two-field stories, including older saves, start with the editor's placeholder room.
+export function hasOpenMap(world: WorldState) {
+  const start = world.locations[0];
+  return !!world.worldInfo && start?.id === "start" && start.name === "开场地点" &&
+    world.locations.slice(1).every(place => /^explored-\d+$/.test(place.id));
+}
+
 export function sameCharacterName(left: string, right: string) {
   const normalize = (name: string) => name.normalize("NFKC").toLowerCase().replace(/\s+/gu, "");
   return normalize(left) === normalize(right);
@@ -122,6 +129,18 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
       case "meet":
         meetCrowdMember(world,change.group,change.locationId);
         break;
+      case "discoverPlace": {
+        const lead = player(world);
+        const origin = world.locations.find(place => place.id === change.from);
+        if (!origin || !hasOpenMap(world) || lead.locationId !== origin.id || lead.journey || lead.condition !== "healthy" ||
+            change.to !== "explored-" + world.locations.length ||
+            world.locations.some(place => place.id === change.to || [place.name,...place.aliases].includes(change.name)))
+          throw new Error("无法从这里发现该地点。");
+        origin.exits.push(change.to);
+        world.locations.push({id:change.to, name:change.name, aliases:[], description:"从这里可以返回" + origin.name + "。",
+          ambience:"四周暂时没有特别的动静。", exits:[origin.id]});
+        break;
+      }
       case "depart": {
         const c = actor(change.actor);
         if (c.kind !== "player" || c.condition !== "healthy" || c.journey || change.arrivesAt <= world.time ||

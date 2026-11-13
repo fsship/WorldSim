@@ -59,6 +59,7 @@ export type ScheduledEvent = z.infer<typeof scheduledEventSchema>;
 
 export const stateChangeSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute}).strict(),
+  z.object({ op:z.literal("discoverPlace"), from:id, to:id, name:z.string().trim().min(1).max(80) }).strict(),
   z.object({ op: z.literal("move"), actor: id, to: id }).strict(),
   z.object({ op:z.literal("meet"), group:id, locationId:id }).strict(),
   z.object({

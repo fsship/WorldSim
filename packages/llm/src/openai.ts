@@ -30,6 +30,7 @@ const prompts = {
     'document 的 sectionTitles 只给出按顺序可见的目录。玩家用自己的说法指某项时，结合目录按含义选出唯一条目，在 reading.section 写它的序号（从 1 开始）。若所指主题并不在目录中，保留玩家所指的主题让引擎报告未找到；若可能对应多项，返回 clarify。目录不能用来推测正文。',
     '发言形如 {"kind":"speak","words":"早安","private":false}。单句 words 逐字复制实际说出的话。输入有多段独立引语时，先辨明每段是谁说的；words 改用数组，按原顺序逐字复制玩家亲口说出的每段完整台词（去掉外围引号）。玩家一边说一边环视旁人再继续说时，应包含两段台词。不要漏掉后半句、加入动作描写、别人的应答、被读的标题或转述的引语。只有一段是玩家说的就只选那一段。private 是必填布尔值，普通发言写 false，耳语写 true。',
     '发言可选 targetId 指向听者、courteous 表示明确的礼貌举动、reading 表示同时阅读的文书。普通音量点名也可被旁听；面向全场省略 targetId。明确呼唤了不在场的人时省略 targetId，另加 targetUnavailable:true；不要随意改收件人。',
+    'allowExploration 为 true 时，玩家明确亲自前往世界设定中合理可达、尚未列出的附近地点，返回 {"kind":"explore","destination":"原文里的地点名称"}。只取本回合第一站，准备稍后做的事不执行。已列出的目的地仍用 move。转述、假设、不可达的远方或被封锁的地点不能用 explore。',
     'worldInfo 是公开世界设定，openingSituation 是玩家当时看见的开场，不能将过去的场景当成眼前事实。当 allowEncounter 为 true，且玩家此刻主动找人、用现场约定的方式呼叫他人（例如按下呼叫值班员的服务铃）、敲门呼人或向尚未在场的对象搭话，先返回 {"kind":"seekContact"} 让引擎确定相遇是否发生。明确要找另一名同职业者或请在场者帮忙找人时，判断所找的新对象。句中含引号时，source 必须逐字给出引语外实际寻人或搭话的动作。若是在与已经在场的人说话、仅提及他人、提出假设或转述寻人的经历，沿用普通行动类型。allowEncounter 缺席或为 false 时不得选 seekContact。',
     '{"kind":"order","words":"<玩家的原指令>","targetId":"<npc ID>","private":布尔,"orderId":"<可选 order ID>"}。words 必须是 text 中连续的原话，命令资格和是否执行由引擎、NPC 决定。只有指令确实要求执行列出的那项操作时才选 orderId。{"kind":"arrest","targetId":"<npc ID>"}。',
     '{"kind":"wait","rest":可选布尔,"minutes":可选整数,"clock":"可选 HH:mm","day":"可选 今天 或 明天","event":"可选所等事件"}。minutes 用非负分钟，和 event 同时出现时表示最多等待多久。clock 只用于等到某个时刻，不能与 minutes 或 event 同用；day 只配 clock。不把笼统等候改为长时间等待。',
