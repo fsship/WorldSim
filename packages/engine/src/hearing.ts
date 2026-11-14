@@ -1,4 +1,4 @@
-import { groupCountAt, groupSlotAt, type Character, type WorldEvent, type WorldState } from "@worldsim/shared";
+import { groupCountAt, groupSlotAt, type Character, type CommitmentAudience, type WorldEvent, type WorldState } from "@worldsim/shared";
 import { present } from "./state";
 
 type Heard = NonNullable<WorldEvent["utterance"]>;
@@ -20,6 +20,28 @@ export function utterance(world:WorldState, speaker: Character, listeners: Chara
   });
   if (groups.length) heard.groups = groups;
   return heard;
+}
+
+/** Resolve the intended listeners from the room as it is now, not as it
+ * was when the messenger agreed. A named group never includes bystanders. */
+export function relayAudience(world:WorldState, speaker:Character, audience:CommitmentAudience):Heard|undefined {
+  if (audience.kind === "person") {
+    const listeners = withinEarshot(world,speaker,audience.id);
+    if (listeners.length) return utterance(world,speaker,listeners,true);
+    return;
+  }
+  const locals = withinEarshot(world,speaker);
+  const here = utterance(world,speaker,locals,false);
+  if (audience.kind === "room") {
+    const reached = audience.id ? here.listenerIds.includes(audience.id) : here.listenerIds.length || here.groups?.length;
+    return reached ? here : undefined;
+  }
+  const group = world.populationGroups.find(g => g.id === audience.id);
+  if (!group) return;
+  const groups = here.groups?.filter(g => g.groupId === group.id);
+  const listenerIds = here.listenerIds.filter(id => id === group.representative?.id);
+  if (!listenerIds.length && !groups?.length) return;
+  return {speakerId:speaker.id,private:true,groupOnly:group.id,listenerIds,...(groups?.length ? {groups} : {})};
 }
 
 /** Anonymous listeners do not receive thousands of Character or knowledge records.

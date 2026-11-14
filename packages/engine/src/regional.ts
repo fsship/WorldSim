@@ -36,7 +36,7 @@ interface Assignment {
 
 /** A regional move takes one real step, including into the foreground.
  * The actor will use detailed decisions there from the next opportunity. */
-function nextStep(world:WorldState, start:string, goal:string):string|undefined {
+export function nextStep(world:WorldState, start:string, goal:string):string|undefined {
   const visited = new Set([start]);
   const queue = [{id:start,first:""}];
   for (let i=0; i<queue.length; i++) {
@@ -65,7 +65,8 @@ export async function advanceRegion(world:WorldState, provider:LLMProvider, deta
   }
   const eligible:Assignment[] = [];
   for (const actor of world.characters) {
-    if (actor.kind !== "npc" || actor.condition !== "healthy" || actor.journey || detailed.has(actor.locationId) || acted.has(actor.id)) continue;
+    if (actor.kind !== "npc" || actor.condition !== "healthy" || actor.journey || detailed.has(actor.locationId) || acted.has(actor.id) ||
+        world.commitments.some(c => c.actorId === actor.id && c.status === "pending")) continue;
     const due = actor.appointments?.find(a => a.from <= world.time && world.time < a.until &&
       actor.locationId !== a.locationId);
     if (!due || npcTextIsPrivate(world,actor,[],due.task)) continue;

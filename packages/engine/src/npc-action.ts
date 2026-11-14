@@ -9,7 +9,7 @@ import { blockedRoute, inLocation, knownFacts, player, record } from "./state";
 
 export interface NpcActionChoice {
   proposal: NpcActionProposal;
-  source: "provider" | "fallback";
+  source: "provider" | "fallback" | "commitment";
 }
 export interface NpcOrder {
   summary: string;
@@ -57,7 +57,7 @@ function witnessedActions(world: WorldState, actor: Character, audience: readonl
   const recent: NonNullable<NpcActionContext["recentActions"]> = [];
   for (let i = world.history.length - 1; i >= 0 && recent.length < 6; i--) {
     const event = world.history[i], action = event.npcAction;
-    if (!action || event.kind !== "world" || action.source !== "provider" || action.kind === "stay") continue;
+    if (!action || event.kind !== "world" || action.source === "fallback" || action.kind === "stay") continue;
     const side = action.otherSide?.locationId === actor.locationId ? action.otherSide : undefined;
     if (event.locationId !== actor.locationId && !side) continue;
     // Older events only establish what the performer and explicit recipients saw.
@@ -167,7 +167,7 @@ export function commitNpcAction(world: WorldState, npc: Character, choice: NpcAc
   source: "opening" | "npc-action" = "npc-action", order?: NpcOrder,
   trigger?: NpcActionContext["trigger"]): WorldEvent | undefined {
   const actor = healthyNpc(world, npc.id);
-  if (!actor || choice.source !== "provider") return;
+  if (!actor || choice.source === "fallback" || (choice.source === "commitment" && choice.proposal.kind !== "move")) return;
   const parsed = NpcActionProposalSchema.safeParse(choice.proposal);
   if (!parsed.success) return;
   const proposal = parsed.data;

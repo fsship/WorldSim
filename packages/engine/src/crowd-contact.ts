@@ -37,9 +37,9 @@ export function meetCrowdMember(world:WorldState, groupId:string, room:string) {
 
 export function witnessedSpeech(world:WorldState, heard:Heard, personId:string) {
   if (personId === heard.speakerId || heard.listenerIds.includes(personId)) return true;
-  if (heard.private || !heard.groups) return false;
+  if (!heard.groups || (heard.private && !heard.groupOnly)) return false;
   const group = world.populationGroups.find(g => g.representative?.id === personId && contactId(g) === personId);
-  if (!group?.representative) return false;
+  if (!group?.representative || (heard.groupOnly && heard.groupOnly !== group.id)) return false;
   const seat = group.representative.slot;
   return heard.groups.some(g => g.groupId === group.id && g.firstSlot !== undefined &&
     seat >= g.firstSlot && seat < g.firstSlot + g.count);

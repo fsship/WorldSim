@@ -15,6 +15,7 @@
     "start": "NODE_ENV=production node \"$npm_execpath\" --filter @worldsim/server start",
     "smoke": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/smoke.ts",
     "test:live-dialogue": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-dialogue.ts",
+    "test:live-commitments": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-live-commitments.ts",
     "test:live-actions": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-actions.ts",
     "test:live-hearing": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-hearing.ts",
     "test:live-plans": "node \"$npm_execpath\" --filter @worldsim/server exec tsx ../../scripts/verify-plans.ts",

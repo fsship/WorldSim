@@ -3,6 +3,7 @@ import {
   type WorldEvent, type WorldState, type WorldFact,
 } from "@worldsim/shared";
 import { meetCrowdMember, witnessedSpeech } from "./crowd-contact";
+import { relayAudience } from "./hearing";
 
 export function player(world: WorldState) {
   const players = world.characters.filter(c => c.kind === "player");
@@ -147,6 +148,21 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
   for (const raw of changes) {
     const change = StateChangeSchema.parse(raw);
     switch (change.op) {
+      case "acceptCommitment": {
+        const plan = change.commitment, sender = actor(plan.actorId);
+        if (sender.kind !== "npc" || sender.condition !== "healthy" || sender.journey ||
+            plan.createdAt !== world.time || plan.nextAt <= world.time || plan.status !== "pending" || plan.failureReason ||
+            !world.locations.some(place=>place.id === plan.destinationId) ||
+            world.commitments.some(c=>c.id === plan.id || c.replyEventId === plan.replyEventId ||
+              (c.actorId === sender.id && c.requestEventId === plan.requestEventId)))
+          throw new Error("无法登记这项角色承诺。");
+        const audience = plan.audience;
+        if (audience.kind === "group" ? !world.populationGroups.some(g=>g.id === audience.id) :
+            audience.id && (audience.id === sender.id || !world.characters.some(c=>c.id === audience.id)))
+          throw new Error("承诺涉及未知或不明确的听者。");
+        world.commitments.push(structuredClone(plan));
+        break;
+      }
       case "encounter": {
         const lead = player(world);
         if (!world.worldInfo || lead.condition !== "healthy" || !inLocation(lead,change.locationId))
@@ -219,6 +235,22 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
           world.sceneState = world.sceneState.filter(old => !(old.scope === entry.scope && old.name === entry.name &&
             (old.scope === "held" || old.locationId === change.locationId)));
           world.sceneState.push({...entry, locationId:change.locationId, ...(objectId ? {objectId} : {})});
+        }
+        break;
+      }
+      case "advanceCommitment": {
+        const plan=world.commitments.find(c=>c.id === change.id);
+        if (!plan || plan.status !== "pending" || plan.nextAt > world.time)
+          throw new Error("这项承诺尚未到期或已结束。");
+        if (change.status === "pending") {
+          if (change.nextAt === undefined || change.nextAt <= world.time) throw new Error("下一步必须晚于当前时刻。");
+          plan.nextAt=change.nextAt;
+        } else {
+          const messenger=actor(plan.actorId);
+          if (change.status === "delivered" && (messenger.condition !== "healthy" || !inLocation(messenger,plan.destinationId) ||
+            !relayAudience(world,messenger,plan.audience))) throw new Error("执行人与约定听众还没有在目的地相遇。");
+          plan.status=change.status;
+          if (change.status === "failed") plan.failureReason=change.reason;
         }
         break;
       }
@@ -371,6 +403,13 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
 export function record(world: WorldState, details: Omit<WorldEvent, "id" | "time">) {
   applyChanges(world, details.changes);
   const event: WorldEvent = { ...details, id: world.id + "/event/" + (world.history.length + 1), time: world.time };
+  // Only a finished situation action has an outcome to witness. Paused or
+  // superseded choices never reach this point with a respondSituation effect.
+  const response = details.changes.find(change => change.op === 'respondSituation');
+  if (response && details.perception !== 'private') {
+    const situation = world.situations.find(s => s.id === response.situationId);
+    if (situation) event.noticeWitnessIds = [...situation.witnesses];
+  }
   world.history.push(event);
   return event;
 }

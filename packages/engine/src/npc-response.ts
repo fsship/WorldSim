@@ -6,16 +6,17 @@ import { impliedListener } from "./conversation";
 import { disclosureAudience, utterance, withinEarshot } from "./hearing";
 import { inLocation, knownFacts, perceive, player, present, projectWorld, record } from "./state";
 import { considerEncounter } from "./encounter";
+import { acceptSpokenCommitment } from "./accept-commitment";
 
 type Trigger = NpcActionContext["trigger"];
 
 export async function npcResponse(world: WorldState, npc: Character, input: string, decision: string, testimonyIds: string[],
   provider: LLMProvider, trigger: Trigger, order?: NpcOrder, speechEventId?: string, quiet = false,
-  witnessedScene?: string): Promise<Observation[]> {
+  witnessedScene?: string, privateRecipientId?:string): Promise<Observation[]> {
   const king = player(world);
   const events: WorldEvent[] = [];
   const source = trigger === "opening" ? "opening" : "npc-action";
-  const replyTo = quiet ? king.id : undefined;
+  const replyTo = quiet ? privateRecipientId ?? king.id : undefined;
   const audienceIds = disclosureAudience(utterance(world,npc,withinEarshot(world,npc,replyTo),quiet));
   const choice = await chooseNpcAction(world, npc, input, decision, testimonyIds, provider, trigger, order, speechEventId, audienceIds, witnessedScene);
   const proposal = choice.proposal;
@@ -51,12 +52,15 @@ export async function npcResponse(world: WorldState, npc: Character, input: stri
         const known = new Set(knownFacts(world, person).map(f => f.id));
         return reply.factIds.filter(id => !known.has(id)).map(fact => ({op:"learn" as const, actor:person.id, fact}));
       });
-      events.push(record(world, {
+      const line = record(world, {
         source, kind:"npc", speaker:npc.name, speakerId:npc.id, text:reply.text,
         utterance:heard, reportedFactIds:reply.factIds, dialogueSource:"provider",
+        ...(reply.restrictedRecall ? {restrictedRecall:true} : {}),
         ...(physical ? {} : {npcAction:stamp}),
         locationId:npc.locationId, perception:"addressed", recipients:heard.listenerIds, changes:learned,
-      }));
+      });
+      events.push(line);
+      if (trigger === "addressed" && speechEventId && reply.relay) acceptSpokenCommitment(world,speechEventId,line,reply.relay);
     }
   } else if (!physical) {
     recordSilence(choice.source === "fallback" || (proposal.kind !== "stay" && !willSpeak) ? "decision" : undefined);
@@ -73,7 +77,8 @@ export async function npcResponse(world: WorldState, npc: Character, input: stri
 /** Make at most one local NPC decision in an otherwise uninterrupted player turn. */
 export async function ambientReaction(world: WorldState, events: WorldEvent[], provider: LLMProvider, waited?: number): Promise<Observation[]> {
   const king = player(world);
-  const candidates = present(world, king).filter(c => c.kind === "npc" && c.condition === "healthy");
+  const candidates = present(world, king).filter(c => c.kind === "npc" && c.condition === "healthy" &&
+    !world.commitments.some(p=>p.actorId === c.id && p.status === "pending"));
   if (!candidates.length) return [];
   let last: WorldEvent | undefined;
   for (let i = world.history.length - 1; i >= 0; i--) {
@@ -83,6 +88,23 @@ export async function ambientReaction(world: WorldState, events: WorldEvent[], p
   const lastIndex = candidates.findIndex(c => c.id === last?.npcAction?.actorId);
   const actor = candidates[(lastIndex + 1) % candidates.length];
   return npcResponse(world, actor, "", ambientScene(world, actor, events, waited), [], provider, "ambient");
+}
+
+/** A listener gets a chance to respond where the message was actually heard. */
+export async function reactToDelivery(world:WorldState, event:WorldEvent, occupied:Set<string>, provider:LLMProvider) {
+  const heard = event.utterance!;
+  const completed = event.changes.find(c=>c.op==="advanceCommitment");
+  const plan = completed && world.commitments.find(c=>c.id===completed.id);
+  const listeners = world.characters.filter(c=>c.kind==="npc" && c.condition==="healthy" &&
+    heard.listenerIds.includes(c.id) && !occupied.has(c.id) && !world.commitments.some(p=>p.actorId===c.id && p.status==="pending"));
+  const listener = listeners.find(c=>c.id===plan?.audience.id) ?? listeners[0];
+  if (!listener) return [];
+  occupied.add(listener.id);
+  const start = world.history.length;
+  const cue = "刚刚有人当面向你转达了口信。请根据亲耳听到的内容与自己的职责决定此刻如何回应。";
+  const seen = await npcResponse(world,listener,"",cue,[],provider,"ambient",undefined,undefined,heard.private,cue,heard.speakerId);
+  for (const reaction of world.history.slice(start)) reaction.reactsToDeliveryId=event.id;
+  return seen;
 }
 
 function ambientScene(world: WorldState, actor: Character, events: readonly WorldEvent[], waited?: number): string {
@@ -159,7 +181,7 @@ export async function runWorldPulse(world: WorldState, provider: LLMProvider,
   const detailed = options.detailedLocations ?? detailedLocationIds(world);
   const unavailable = new Set(options.excludeActorIds);
   const localCast = world.characters.filter(c => c.kind === "npc" && c.condition === "healthy" && !c.journey &&
-    detailed.has(c.locationId) && !unavailable.has(c.id));
+    detailed.has(c.locationId) && !unavailable.has(c.id) && !world.commitments.some(p=>p.actorId===c.id && p.status==="pending"));
   if (!localCast.length) return [];
   const unranked = new Set(localCast.map(c => c.id));
   const lastTurn = new Map<string, number>();

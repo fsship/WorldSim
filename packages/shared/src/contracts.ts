@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReviewedRelaySchema } from './commitment';
 import { quoteSpans, readSegmentedSpeech } from './speech';
 
 const nonempty = z.string().min(1);
@@ -383,6 +384,11 @@ export const DialogueContextSchema = z.object({
     .refine(facts => new Set(facts.map(f => f.id)).size === facts.length, '事实标识重复'),
   history: z.array(dialogueLineSchema).max(16),
   recentNotices: z.array(z.object({ time: minute, text: ActionTextSchema }).strict()).max(4).optional(),
+  witnessedEvents: z.array(z.object({
+    time:minute, location:referenceText, source:z.enum(['decision','npc-action','commitment','commitment-failed']), text:ActionTextSchema,
+    speaker:participant.shape.name.optional(), recipient:participant.shape.name.optional(),
+    restricted:z.literal(true).optional(),
+  }).strict()).max(8).optional(),
   preparedNotes: z.array(z.object({ document:referenceText, title:referenceText, text:ActionTextSchema }).strict()).max(8).optional(),
   input: z.string().trim().max(2000), decision: z.string().trim().min(1).max(500),
   revision: DialogueVerdictSchema.optional(),
@@ -390,7 +396,7 @@ export const DialogueContextSchema = z.object({
 export type DialogueContext = z.infer<typeof DialogueContextSchema>;
 
 export const NpcActionContextSchema = DialogueContextSchema.pick({
-  player: true, worldInfo: true, location: true, surroundings: true, duty: true, present: true, listeners: true, facts: true, history: true, recentNotices: true,
+  player: true, worldInfo: true, location: true, surroundings: true, duty: true, present: true, listeners: true, facts: true, history: true, recentNotices: true, witnessedEvents:true,
   input: true, decision: true, currentTime:true,
 }).extend({
   trigger: z.enum(['opening', 'addressed', 'ambient']),
@@ -451,6 +457,7 @@ export type DialogueReviewContext = z.infer<typeof DialogueReviewContextSchema>;
 // Optional revision hints cannot turn an otherwise usable verdict into a service outage.
 // The three decisions themselves must always be explicit booleans.
 export const DialogueReviewSchema = DialogueVerdictSchema.extend({
+  relay:ReviewedRelaySchema.optional().catch(undefined),
   issue:dialogueIssue.optional().catch(undefined),
   excerpt:DialogueDraftSchema.optional().catch(undefined),
 }).strict();

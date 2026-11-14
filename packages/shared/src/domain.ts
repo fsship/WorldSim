@@ -1,4 +1,5 @@
 import { activeSituationSchema, situationDefinitionSchema } from "./situation";
+import { NpcCommitmentSchema } from "./commitment";
 import { z } from "zod";
 import { sceneValueSchema, ActionIntentSchema, DialogueVerdictSchema, PendingWaitSchema, PublicTurnSchema, TurnPlanSchema } from "./contracts";
 import { PopulationGroupSchema } from "./population";
@@ -59,6 +60,8 @@ export const scheduledEventSchema = z.object({
 export type ScheduledEvent = z.infer<typeof scheduledEventSchema>;
 
 export const stateChangeSchema = z.discriminatedUnion("op", [
+  z.object({op:z.literal("acceptCommitment"),commitment:NpcCommitmentSchema}).strict(),
+  z.object({op:z.literal("advanceCommitment"),id,status:z.enum(["pending","delivered","failed"]),nextAt:minute.optional(),reason:id.max(400).optional()}).strict(),
   z.object({op:z.literal("respondSituation"),situationId:id,actionId:id}).strict(),
   z.object({op:z.literal("openingAssets"),locationId:id,assets:z.array(z.object({scope:z.enum(["held","scene"]),name:id,value:id}).strict()).max(32)}).strict(),
   z.object({op:z.literal("sceneStep"), locationId:id, sets:z.array(sceneValueSchema).max(4), clears:z.array(sceneValueSchema).max(4).optional()}).strict(),
@@ -94,15 +97,17 @@ export const worldEventSchema = z.object({
   pendingResponse: z.object({
     situationId:id, actionId:id, eventId:id, updatedAt:minute, remaining:minute,
   }).strict().optional(),
-  utterance: z.object({ speakerId: id, listenerIds: z.array(id), private: z.boolean().optional(),
+  utterance: z.object({ speakerId: id, listenerIds: z.array(id), private: z.boolean().optional(), groupOnly:id.optional(),
     groups:z.array(z.object({groupId:id, name:id, count:z.number().int().positive(), firstSlot:z.number().int().positive().optional()}).strict()).optional(),
   }).strict().optional(),
   noticeWitnessIds: z.array(id).optional(),
+  restrictedRecall: z.literal(true).optional(),
   dialogueSource: z.enum(["provider", "fallback"]).optional(),
   replyToFailureId: id.optional(),
+  reactsToDeliveryId:id.optional(),
   npcAction: z.object({
     actorId: id, kind: z.enum(["stay", "speak", "move", "inspect", "gesture", "act", "carryOutOrder"]),
-    source: z.enum(["provider", "fallback"]), trigger: z.enum(["opening", "addressed", "ambient"]).optional(),
+    source: z.enum(["provider", "fallback","commitment"]), trigger: z.enum(["opening", "addressed", "ambient"]).optional(),
     witnessIds: z.array(id).optional(),
     otherSide: z.object({ locationId:id, text:id, witnessIds:z.array(id) }).strict().optional(),
     worldPulse: z.literal(true).optional(),
@@ -143,6 +148,7 @@ export const worldStateSchema = z.object({
     .default([]),
   items: z.array(z.object({ ...sceneObject, locationId:id.optional(), description:id, appearance:id.optional() }).strict()),
   facts: z.array(worldFactSchema), queue: z.array(scheduledEventSchema),
+  commitments:z.array(NpcCommitmentSchema).default([]),
   situations:z.array(activeSituationSchema).default([]),
   sceneState:z.array(sceneValueSchema.extend({locationId:id, objectId:id.optional()})).default([]),
   history: z.array(worldEventSchema), variables: vars,

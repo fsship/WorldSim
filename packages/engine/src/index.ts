@@ -4,7 +4,7 @@ import {
 } from "@worldsim/shared";
 import { interpretTurn } from "./turn-interpretation";
 import { utterance, withinEarshot } from "./hearing";
-import { ambientReaction, detailedLocationIds, npcResponse, runWorldPulse } from "./npc-response";
+import { ambientReaction, detailedLocationIds, npcResponse, reactToDelivery, runWorldPulse } from "./npc-response";
 import { advanceRegion, observePopulation } from "./regional";
 import { createTurnClock, nextWorldOpportunity, scheduleEvent } from "./scheduler";
 import { readDocument } from "./reading";
@@ -197,7 +197,7 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
     const encounter = await considerEncounter(world, provider, "event", undefined, notices);
     const seen = encounter && perceive(encounter, world);
     return seen ? [seen] : [];
-  } : undefined);
+  } : undefined, (event,occupied) => reactToDelivery(world,event,occupied,provider));
   let interrupted: boolean;
   let goalMet = false;
   if (plan?.kind === "sequence") {

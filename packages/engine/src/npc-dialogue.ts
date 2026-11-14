@@ -1,15 +1,16 @@
 import {
   DialogueContextSchema, DialogueDraftSchema, DialogueReviewSchema, readablesAt, roomDescription, type DialogueContext,
-  type DialogueDraft, type LLMProvider, type WorldState, type Character, type WorldFact,
+  type DialogueDraft, type LLMProvider, type RelayAcceptance, type WorldState, type Character, type WorldEvent, type WorldFact,
 } from "@worldsim/shared";
 import { impliedListener } from "./conversation";
+import { relayTerms } from "./accept-commitment";
 import { crowdAudienceName } from "./hearing";
 import { witnessedSpeech } from "./crowd-contact";
 import { inLocation, knownFacts, perceive, player, present, visibleSituations } from "./state";
 
 type DialogueFailure = "generation" | "validation" | "review" | "review_unavailable";
 type ReplyFailure = {failure:DialogueFailure; verdict?:DialogueContext["revision"]};
-type ReplyResult = DialogueDraft | ReplyFailure;
+type ReplyResult = (DialogueDraft & {relay?:RelayAcceptance; restrictedRecall?:true}) | ReplyFailure;
 
 export function replyFailureNotice({failure, verdict}: ReplyFailure): string {
   if (failure === "generation") return "的答复暂时未能生成。";
@@ -37,7 +38,7 @@ function transcript(world: WorldState, king: Character, npc: Character, privateT
       if (event.id === currentSpeechEventId || event.dialogueSource === "fallback") continue;
       // A character can quote a whisper only to people who already witnessed it.
       const witnessed = (id: string) => !crowdAudienceName(world,id) && witnessedSpeech(world,speech,id);
-      if (!witnessed(npc.id) || (speech.private && !replyAudience.every(witnessed))) continue;
+      if (!witnessed(npc.id) || ((speech.private || event.restrictedRecall) && !replyAudience.every(witnessed))) continue;
       if (speech.speakerId === king.id) add({role:"player", text:event.text});
       else if (speech.speakerId === npc.id) add({role:"npc", text:event.text});
       else {
@@ -73,10 +74,91 @@ function witnessedNotices(world: WorldState, npc: Character, privateText: (text:
     const event = world.history[i];
     const witnesses = event.noticeWitnessIds;
     if (!witnesses?.includes(npc.id) || event.perception === "private" ||
+        event.changes.some(change => change.op === "respondSituation") ||
         (event.perception === "addressed" && !replyAudience.every(id => witnesses.includes(id)))) continue;
     if (event.text.length <= 2000 && !privateText(event.text)) recent.push({time:event.time, text:event.text});
   }
   return recent.reverse();
+}
+
+type WitnessedEvent = NonNullable<DialogueContext["witnessedEvents"]>[number];
+
+function deliveryReceipt(world:WorldState, event:WorldEvent, npc:Character, audience:readonly string[]) {
+  const speech = event.utterance;
+  const change = event.changes.find(change => change.op === "advanceCommitment" && change.status === "delivered");
+  if (event.source !== "commitment-delivery" || !speech || change?.op !== "advanceCommitment" ||
+      !witnessedSpeech(world,speech,npc.id)) return;
+  const commitment = world.commitments.find(c => c.id === change.id);
+  if (!commitment || commitment.status !== "delivered" || commitment.actorId !== speech.speakerId ||
+      commitment.destinationId !== event.locationId) return;
+  const speaker = world.characters.find(c => c.id === speech.speakerId)?.name;
+  const target = commitment.audience;
+  let recipient:string|undefined;
+  if (target.kind === "group") {
+    const group = world.populationGroups.find(g => g.id === target.id);
+    if (group && (speech.groups?.some(g => g.groupId === group.id) ||
+        (group.representative && speech.listenerIds.includes(group.representative.id)))) recipient = group.name;
+  } else if (target.id) {
+    recipient = world.characters.find(c => c.id === target.id && speech.listenerIds.includes(c.id))?.name;
+  } else if (speech.listenerIds.length || speech.groups?.length) recipient = "当时在场的听众";
+  if (!speaker || !recipient) return;
+  if (speech.private) {
+    const requester = world.history.find(e => e.id === commitment.requestEventId)?.utterance?.speakerId;
+    if (!audience.every(id => id === requester || witnessedSpeech(world,speech,id))) return;
+  }
+  return {source:"commitment" as const,text:event.text,speaker,recipient,...(speech.private ? {restricted:true as const} : {})};
+}
+
+function failureReceipt(world:WorldState, event:WorldEvent, npc:Character, audience:readonly string[]) {
+  if (event.kind !== "system" || event.perception !== "addressed" || !event.recipients.includes(npc.id)) return;
+  const change = event.changes.find(c => c.op === "advanceCommitment" && c.status === "failed");
+  if (change?.op !== "advanceCommitment" || !change.reason) return;
+  const plan = world.commitments.find(c => c.id === change.id);
+  if (plan?.status !== "failed" || plan.actorId !== npc.id || plan.failureReason !== change.reason) return;
+  const requester = world.history.find(e => e.id === plan.requestEventId)?.utterance?.speakerId;
+  if (!requester || !audience.includes(requester) || audience.some(id => id !== requester)) return;
+  return {source:"commitment-failed" as const,text:change.reason};
+}
+
+// Only committed journal entries supply testimony. An action in a queue or
+// someone's current address says nothing about who witnessed it earlier.
+function witnessedEvents(world:WorldState, npc:Character, privateText:(text:string)=>boolean, audience:readonly string[] = []) {
+  const events:WitnessedEvent[] = [];
+  let routineCount = 0;
+  for (let i = world.history.length - 1; i >= 0 && events.length < 8; i--) {
+    const event = world.history[i];
+    if (event.time > world.time || event.perception === "private") continue;
+    let locationId = event.locationId;
+    let memory:Omit<WitnessedEvent,"time"|"location"> | undefined;
+    if (event.source === "commitment-delivery") {
+      memory = deliveryReceipt(world,event,npc,audience);
+    } else if (event.source === "commitment-failed") {
+      memory = failureReceipt(world,event,npc,audience);
+    } else if (event.changes.some(change => change.op === "respondSituation")) {
+      const witnesses = event.noticeWitnessIds;
+      if (witnesses?.includes(npc.id) && audience.every(id => witnesses.includes(id)))
+        memory = {source:"decision",text:event.text};
+    } else if (routineCount < 3 && event.kind === "world" && event.npcAction && event.npcAction.kind !== "stay" &&
+        (event.npcAction.source === "provider" || (event.npcAction.source === "commitment" && event.npcAction.kind === "move"))) {
+      const action = event.npcAction;
+      const witnesses = action.witnessIds ?? [action.actorId,...event.recipients];
+      const side = !witnesses.includes(npc.id) ? action.otherSide : undefined;
+      const who = side?.witnessIds ?? witnesses;
+      // The performer can report their own public work later. Other people can
+      // corroborate a gesture they saw together, from their own side of a move.
+      if (who.includes(npc.id) && (npc.id === action.actorId || audience.every(id => who.includes(id)))) {
+        memory = {source:"npc-action",text:side?.text ?? event.text};
+        locationId = side?.locationId ?? locationId;
+      }
+    }
+    if (!memory || memory.text.length > 2000 || privateText(memory.text) ||
+        (memory.speaker && privateText(memory.speaker)) || (memory.recipient && privateText(memory.recipient))) continue;
+    const location = world.locations.find(l => l.id === locationId)?.name;
+    if (!location || privateText(location)) continue;
+    if (memory.source === "npc-action") routineCount++;
+    events.push({...memory,time:event.time,location});
+  }
+  return events.reverse();
 }
 
 function allowedFacts(world: WorldState, npc: Character, testimonyIds: string[], replyAudience: readonly string[] = []): WorldFact[] {
@@ -149,12 +231,20 @@ export function npcContext(world: WorldState, npc: Character, input: string, dec
   const privateText = privateGuard(world, permitted);
   const history = opening ? [] : transcript(world, king, npc, privateText, currentSpeechEventId, replyAudience);
   const recentNotices = witnessedNotices(world, npc, privateText, replyAudience);
+  const firsthand = witnessedEvents(world,npc,privateText,replyAudience);
   const room = world.locations.find(room => room.id === npc.locationId);
+  const listeners = (replyAudience ?? []).map(id => {
+    const listener = world.characters.find(c => c.id === id);
+    return listener ? visibleSituations(world,listener) : [];
+  });
   const reports = visibleSituations(world,npc).filter(s => {
     const source = world.queue.find(e => e.id === s.eventId);
-    return source?.situation && !source.situation.actions.length && !s.decisions.length &&
-      !privateText(s.summary) && (!replyAudience || source.perception === "public" ||
-        replyAudience.every(id => s.witnesses.includes(id)));
+    if (!source?.situation || source.perception === "private" || privateText(s.summary)) return false;
+    const broadcast = source.perception === "public" && source.at === s.updatedAt && source.situation.summary === s.summary;
+    // A public announcement can be followed by a decision witnessed in only
+    // one room. For a local report the listeners need that same known version.
+    return broadcast || listeners.every(reports => reports
+      .some(known => known.id === s.id && known.updatedAt === s.updatedAt && known.summary === s.summary));
   }).sort((a,b) => b.updatedAt - a.updatedAt);
   const surroundings = room && [roomDescription(world,room), ...reports.map(s =>
     "第" + (Math.floor(s.updatedAt / 1440) + 1) + "天获知：" + s.summary)].join(" ");
@@ -177,6 +267,7 @@ export function npcContext(world: WorldState, npc: Character, input: string, dec
     facts:permitted.map(f => ({id:f.id, text:f.content.text})),
     history,
     ...(recentNotices.length ? {recentNotices} : {}),
+    ...(firsthand.length ? {witnessedEvents:firsthand} : {}),
     input:privateText(input) ? "（涉及未经核实的消息）" : input,
     decision:privateText(decision) ? "只根据可确认的信息行动。" : decision,
   });
@@ -206,7 +297,7 @@ export async function writeNpcReply(world: WorldState, npc: Character, input: st
       // conversation itself. This pass cannot deliver or teach a world fact.
       if (attempt === 2 && !excerpt) {
         privateText = privateGuard(world, []);
-        sources = {...context, facts:[], duty:undefined, worldInfo:undefined, surroundings:undefined, recentNotices:undefined, preparedNotes:undefined,
+        sources = {...context, facts:[], duty:undefined, worldInfo:undefined, surroundings:undefined, recentNotices:undefined, witnessedEvents:undefined, preparedNotes:undefined,
           input:privateText(context.input) ? "（提到了当前无法核实的消息）" : context.input,
           decision:"这次只依据亲耳听到的对话答复。可复述谁说过什么，也可表示自己无从证实。请用一句自己的话回应，不报告世界消息。",
           history:context.history.filter(line => !privateText(line.text))};
@@ -218,8 +309,23 @@ export async function writeNpcReply(world: WorldState, npc: Character, input: st
       if (!permittedDraft(draft, sources, privateText)) return {failure:"validation"};
       stage = "review_unavailable";
       const review = DialogueReviewSchema.parse(await provider.reviewDialogue(structuredClone({context:sources, draft})));
-      if (review.grounded && review.playerAgency && review.citationsAccurate) return draft;
-      const {excerpt:proposed, ...verdict} = review;
+      const {excerpt:proposed,relay,...verdict} = review;
+      if (review.grounded && review.playerAgency && review.citationsAccurate) {
+        const accepted = currentSpeechEventId && relay ? {acceptance:draft.text,destination:relay.destination,
+          audience:relay.audience,message:relay.message} : undefined;
+        if (accepted) {
+          const request=world.history.find(e=>e.id===currentSpeechEventId);
+          // Do not publish "I will deliver it" as an ordinary line if we
+          // can't bind those words to a real request, message and audience.
+          if (!request || request.source !== "speech" || request.utterance?.speakerId !== player(world).id ||
+            !request.utterance.listenerIds.includes(npc.id) || request.locationId !== npc.locationId ||
+            !relayTerms(world,npc.id,request.text,accepted)) return {failure:"validation"};
+        }
+        // A receipt shared in a room with only authorized listeners can still
+        // carry private information. Remember that audience on later retellings.
+        const restrictedRecall = sources.witnessedEvents?.some(e => e.source === "commitment-failed" || e.restricted);
+        return {...draft,...(accepted ? {relay:accepted} : {}),...(restrictedRecall ? {restrictedRecall:true} : {})};
+      }
       revision = verdict;
       // The reviewer may identify a usable part of the NPC's own words. Treat it as
       // a new draft and obtain a fresh verdict before anyone hears or learns it.

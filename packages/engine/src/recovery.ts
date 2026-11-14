@@ -1,7 +1,8 @@
-import type { GameTurn, LLMProvider, PublicTurn, WorldEvent, WorldState } from "@worldsim/shared";
-import { disclosureAudience, withinEarshot } from "./hearing";
+import type { GameTurn, LLMProvider, PublicTurn, WorldState } from "@worldsim/shared";
+import { disclosureAudience, utterance, withinEarshot } from "./hearing";
 import { replyFailureNotice, writeNpcReply } from "./npc-dialogue";
 import { knownFacts, player, record } from "./state";
+import { acceptSpokenCommitment } from "./accept-commitment";
 
 // A saved failure has no rejected prose. Use the original witnessed speech and
 // the NPC's completed action; a retry never runs the action interpreter again.
@@ -31,7 +32,12 @@ export function replyRecovery(world: WorldState, turn: GameTurn) {
   const audience = withinEarshot(world, npc, quiet ? king.id : undefined);
   const expected = [king.id,...speech.utterance.listenerIds.filter(id => id !== npc.id)];
   if (audience.length !== expected.length || audience.some(c => !expected.includes(c.id))) return;
-  return {failure, observation, npc, speech, physical, index, quiet, audience} as const;
+  const heard = utterance(world,npc,audience,quiet);
+  const originalGroups = speech.utterance.groups ?? [];
+  const presentGroups = heard.groups ?? [];
+  if (originalGroups.length !== presentGroups.length || originalGroups.some(old =>
+    !presentGroups.some(now => now.groupId === old.groupId && now.count === old.count && now.firstSlot === old.firstSlot))) return;
+  return {failure, observation, npc, speech, physical, index, heard, audience} as const;
 }
 
 /** Overlay the journal of this specific world. The turn row and old snapshots
@@ -66,12 +72,10 @@ function replaceObservation(view: PublicTurn, index: number, observation: Public
 export async function retryDialogue(world: WorldState, turn: GameTurn, provider: LLMProvider): Promise<{world:WorldState} | {notice:string}> {
   const state = replyRecovery(world,turn);
   if (!state || state.replacement) return {notice:"原提问的现场无法还原。"};
-  const {failure, npc, speech, index, physical, quiet, audience} = state;
+  const {failure, npc, speech, index, physical, heard, audience} = state;
   const then = {...world, time:failure.time, history:world.history.slice(0,index)};
   // For old saves the original testimony allowance was not persisted. Limit a
   // recovered line to facts already shareable with the original audience.
-  const heard:NonNullable<WorldEvent["utterance"]> = {speakerId:npc.id,listenerIds:audience.map(c=>c.id),
-    ...(quiet ? {private:true} : {}), ...(speech.utterance?.groups ? {groups:speech.utterance.groups} : {})};
   const reply = await writeNpcReply(then, npc, speech.text, physical?.text ?? "双方正在此地交谈。",
     [], provider, false, speech.id, disclosureAudience(heard));
   if ("failure" in reply) return {notice:npc.name + replyFailureNotice(reply)};
@@ -80,8 +84,10 @@ export async function retryDialogue(world: WorldState, turn: GameTurn, provider:
     const known = new Set(knownFacts(then,person).map(f => f.id));
     return reply.factIds.filter(id => !known.has(id)).map(fact => ({op:"learn" as const,actor:person.id,fact}));
   });
-  record(next,{source:"dialogue-retry",kind:"npc",speaker:npc.name,speakerId:npc.id,text:reply.text,
+  const line = record(next,{source:"dialogue-retry",kind:"npc",speaker:npc.name,speakerId:npc.id,text:reply.text,
     dialogueSource:"provider",replyToFailureId:failure.id,reportedFactIds:reply.factIds,utterance:heard,
+    ...(reply.restrictedRecall ? {restrictedRecall:true} : {}),
     perception:"addressed",locationId:npc.locationId,recipients:heard.listenerIds,changes:learned});
+  if (reply.relay) acceptSpokenCommitment(next,speech.id,line,reply.relay);
   return {world:next};
 }

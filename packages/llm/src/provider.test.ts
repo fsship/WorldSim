@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isPrivateSpeech, readDialogueLine, readQuotedSpeech, type DialogueContext, type ParseContext, type ProviderConfig } from '@worldsim/shared';
+import { isPrivateSpeech, readDialogueLine, readQuotedSpeech, type DialogueContext, type LlmCallAttempt, type ParseContext, type ProviderConfig } from '@worldsim/shared';
 import { MockLLMProvider, OpenAICompatibleProvider, createProvider } from './index';
 
 const config: ProviderConfig = {
@@ -7,7 +7,7 @@ const config: ProviderConfig = {
   model: 'fixture-model', temperature: 0.3, timeoutMs: 1000, maxTokens: 800, retries: 1,
 };
 const parseContext: ParseContext = { text: '看看议事厅', location: '议事厅', exits: [], people: [], items: [] };
-function completion(content: string, finish_reason = 'stop') {
+function completion(content: string | null, finish_reason = 'stop') {
   return Response.json({ choices: [{ finish_reason, message: { content } }] });
 }
 
@@ -45,6 +45,7 @@ describe('OpenAI 兼容协议', () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(invalid()).mockResolvedValueOnce(completion('{"kind":"attempt"}'));
     expect(await new OpenAICompatibleProvider(config, fetcher).parse(parseContext)).toEqual({ kind: 'attempt' });
     expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.every(([,init]) => !('reasoning_effort' in JSON.parse(String(init?.body))))).toBe(true);
   });
   it('stops after the retry limit and does not expose response bodies', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response('private upstream detail', { status: 429 }));
@@ -118,6 +119,106 @@ describe('NPC 台词编写和独立审查', () => {
   };
   const draft = { text:'您问的是晨报以外的进展。那我眼下还说不准。', factIds:[] };
   const accepted = { grounded:true, playerAgency:true, citationsAccurate:true };
+  const commission = {...context,input:'请你去市集，当着路人和林岚的面，公开宣布我的决定：下午照常开门。我等你回来。'};
+  const promise = {text:'我这就去市集，当面向林岚和路人转达你的原话。',factIds:[]};
+  const relay = {acceptsEntireReply:true,destination:'市集',audience:{kind:'room',name:'林岚'},message:'下午照常开门'};
+  it.each([
+    accepted,
+    {...accepted,relay:null},
+    {...accepted,relay:{acceptsEntireReply:true}},
+    {...accepted,relay:{...relay,message:'今天不营业'}},
+  ])('requires an explicit complete relay decision and corrects the review within its existing retry budget', async invalid => {
+    const entries: LlmCallAttempt[] = [];
+    const valid = {...accepted,relay};
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion(JSON.stringify(invalid)))
+      .mockResolvedValueOnce(completion(JSON.stringify(valid)));
+    const provider = new OpenAICompatibleProvider(config,fetcher,entry=>entries.push(entry));
+    expect(await provider.reviewDialogue({context:commission,draft:promise})).toEqual(valid);
+    const [first,second] = entries.map(entry=>JSON.parse(entry.requestBody));
+    expect(first.messages[0].content).toContain('必填字段 relay');
+    expect(second.messages[0].content).toContain('上次 relay');
+    expect(second.messages[1]).toEqual(first.messages[1]);
+    expect(first.max_completion_tokens).toBe(second.max_completion_tokens);
+    expect(entries.map(entry=>entry.errorReason)).toEqual(['relay_verdict',null]);
+  });
+  it('fails closed when the reviewed promise still lacks a usable decision after the retry', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async()=>completion(JSON.stringify(accepted)));
+    const provider = new OpenAICompatibleProvider(config,fetcher);
+    await expect(provider.reviewDialogue({context:commission,draft:promise})).rejects.toMatchObject({reason:'format'});
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it.each(['这事我不能去办。','如果能找人替我，我会去说。','请问要我转告谁？','我已经把这句话听清楚了。'])('keeps a reply with no new commitment when the review explicitly returns null: %s', async text => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion(JSON.stringify({...accepted,relay:null})));
+    const provider = new OpenAICompatibleProvider(config,fetcher);
+    expect(await provider.reviewDialogue({context:commission,draft:{text,factIds:[]}})).toEqual(accepted);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('accepts an explicit negative appraisal without turning the rejected draft into a promise', async () => {
+    const refused = {...accepted,grounded:false};
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion(JSON.stringify({...refused,relay:null})));
+    expect(await new OpenAICompatibleProvider(config,fetcher).reviewDialogue({context:commission,draft:promise})).toEqual(refused);
+  });
+  it('keeps a request to tell the player what happened on the ordinary review protocol', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion(JSON.stringify(accepted)));
+    const provider = new OpenAICompatibleProvider(config,fetcher);
+    expect(await provider.reviewDialogue({context:{...context,input:'请告诉我罗兰去了哪里？'},draft})).toEqual(accepted);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body)).messages[0].content).not.toContain('必填字段 relay');
+  });
+  it.each(['', null])('retries a truncated review with lower effort and the same budget, evidence and review standard', async content => {
+    const refused = { ...accepted, grounded:false };
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(completion(content,'length'))
+      .mockResolvedValueOnce(completion(JSON.stringify(refused)))
+      .mockResolvedValueOnce(completion(JSON.stringify(accepted)));
+    const entries: LlmCallAttempt[] = [];
+    const provider = new OpenAICompatibleProvider(config,fetcher,entry => entries.push(entry));
+    expect(await provider.reviewDialogue({context,draft})).toEqual(refused);
+    await provider.reviewDialogue({context,draft});
+    const [first,retry,next] = entries.map(entry => JSON.parse(entry.requestBody));
+    expect(first).not.toHaveProperty('reasoning_effort');
+    expect(first.max_completion_tokens).toBe(config.maxTokens);
+    expect(retry).toEqual({...first,reasoning_effort:'low'});
+    expect(next).toEqual(first);
+    expect(entries.map(entry => entry.errorReason)).toEqual(['review_length',null,null]);
+  });
+  it('does not negotiate reasoning effort for a malformed but untruncated review', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion('{'))
+      .mockResolvedValueOnce(completion(JSON.stringify(accepted)));
+    await new OpenAICompatibleProvider(config,fetcher).reviewDialogue({context,draft});
+    const bodies = fetcher.mock.calls.map(([,init]) => JSON.parse(String(init?.body)));
+    expect(bodies[0]).not.toHaveProperty('reasoning_effort');
+    expect(bodies[1]).toEqual(bodies[0]);
+  });
+  it('honors zero configured retries after an empty length response', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion('','length'));
+    await expect(new OpenAICompatibleProvider({...config,retries:0},fetcher).reviewDialogue({context,draft}))
+      .rejects.toMatchObject({reason:'format'});
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('returns to the normal parameters if the low-effort generation fails for a different reason', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(completion('','length'))
+      .mockResolvedValueOnce(completion('{')).mockResolvedValueOnce(completion(JSON.stringify(accepted)));
+    await new OpenAICompatibleProvider({...config,retries:2},fetcher).reviewDialogue({context,draft});
+    expect(fetcher.mock.calls.map(([,init]) => JSON.parse(String(init?.body)).reasoning_effort))
+      .toEqual([undefined,'low',undefined]);
+  });
+  it('records an explicit low-effort parameter rejection and retries with the endpoint default', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(completion('','length'))
+      .mockResolvedValueOnce(Response.json({error:{param:'reasoning_effort',code:'unsupported_value'}},{status:400}))
+      .mockResolvedValueOnce(completion(JSON.stringify(accepted)))
+      .mockResolvedValueOnce(completion('','length'))
+      .mockResolvedValueOnce(completion(JSON.stringify(accepted)));
+    const entries: LlmCallAttempt[] = [];
+    const provider = new OpenAICompatibleProvider(config,fetcher,entry => entries.push(entry));
+    await provider.reviewDialogue({context,draft});
+    await provider.reviewDialogue({context,draft});
+    expect(entries.map(entry => JSON.parse(entry.requestBody).reasoning_effort))
+      .toEqual([undefined,'low',undefined,undefined,undefined]);
+    expect(entries.map(entry => [entry.errorReason,entry.httpStatus])).toEqual([
+      ['review_length',200],['unsupported_reasoning_effort',400],[null,200],['review_length',200],[null,200],
+    ]);
+  });
   it('preserves a freely worded model response and sends a separate review request with only the scoped dialogue data', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(completion(JSON.stringify(draft)))

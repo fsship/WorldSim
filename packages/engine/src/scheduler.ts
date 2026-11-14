@@ -1,6 +1,7 @@
 import { groupCountAt, ScheduledEventSchema, type ScheduledEvent, type WorldState, type Observation, type WorldEvent } from "@worldsim/shared";
 import { inLocation, knownFacts, perceive, player, record } from "./state";
 import { hasInspectedScene } from "./npc-action";
+import { nextRelayTime, progressRelays } from "./relay-progress";
 
 const QUEUE_LIMIT = 256;
 const MAX_WAIT_JUDGMENTS = 8;
@@ -112,7 +113,8 @@ function* checkpoints(world: WorldState, target: number, opportunities?: {next:N
       throw new Error("下一次世界行动必须在当前时刻之后。");
     if (opportunities && opportunities.remaining() <= 0 && pulseAt <= target) return;
     const pending = world.queue.filter(e => e.status === "pending" && e.at <= target).sort(ordered);
-    const at = Math.max(world.time, Math.min(pending[0]?.at ?? target, pulseAt, target));
+    const relayAt = nextRelayTime(world,world.time);
+    const at = Math.max(world.time, Math.min(pending[0]?.at ?? target, pulseAt, relayAt, target));
     if (at !== world.time) record(world, {kind:"system", text:"时间流逝。", source:"clock", perception:"private",
       locationId:player(world).locationId, recipients:[], changes:[{op:"clock",to:at}]});
     // A completed journey places the traveller in the room before this minute's
@@ -129,8 +131,12 @@ function* checkpoints(world: WorldState, target: number, opportunities?: {next:N
         important ||= event.important;
       }
     }
-    const pulse = at === pulseAt;
-    yield {at, pulse, visible, important};
+    const relays = at === relayAt ? progressRelays(world) : undefined;
+    if (relays) {
+      visible.push(...relays.observations);
+      important ||= relays.deliveries.some(event => !!perceive(event,world));
+    }
+    yield {at, pulse:at === pulseAt, visible, important, relays};
     // A callback may legitimately change a later event's preconditions. Read
     // the queue again only after this instant's actions have been committed.
   } while (world.time < target);
@@ -167,7 +173,8 @@ export interface TurnClock {
 
 export function createTurnClock(world: WorldState, observations: Observation[], onPulse?: WorldPulse,
   nextOpportunity: NextOpportunity = (_world, after) => nextPulse(after),
-  onNotices?: () => Promise<Observation[]>): TurnClock {
+  onNotices?: () => Promise<Observation[]>,
+  onDelivery?: (event:WorldEvent, occupied:Set<string>) => Promise<Observation[]>): TurnClock {
   let pulsesLeft = MAX_TURN_PULSES;
   const opportunities = onPulse ? {next:nextOpportunity, remaining:() => pulsesLeft} : undefined;
   return {async advance(minutes, interruptible, match, atTarget) {
@@ -182,6 +189,13 @@ export function createTurnClock(world: WorldState, observations: Observation[], 
         const encounters = await onNotices();
         append(observations, encounters, tick.at);
         visible.push(...encounters.map(o => o.text));
+      }
+      if (onDelivery && tick.relays) {
+        for (const event of tick.relays.deliveries) {
+          const reactions = await onDelivery(event,tick.relays.acted);
+          append(observations,reactions,tick.at);
+          visible.push(...reactions.filter(o=>o.kind !== "system").map(o=>o.text));
+        }
       }
       let sceneChanged = false;
       if (tick.pulse && onPulse) {

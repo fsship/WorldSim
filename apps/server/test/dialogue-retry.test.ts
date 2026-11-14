@@ -17,14 +17,19 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir,{recursive:true,force:true});
 });
 
-async function failedSave(options: {physical?:boolean; interrupt?:boolean; whisper?:boolean} = {}) {
+async function failedSave(options: {physical?:boolean; interrupt?:boolean; whisper?:boolean; departingGroup?:boolean} = {}) {
   const dir = mkdtempSync(join(tmpdir(),'worldsim-dialogue-'));
   dirs.push(dir);
   const path = join(dir,'play.sqlite');
   const store = new GameStore(path);
   try {
     const base = createPalace(randomUUID());
-    base.time = options.interrupt ? 494 : 505;
+    // Successful public retries use the interval after the morning assembly is complete.
+    base.time = options.departingGroup ? 480 : options.interrupt ? 494 : 527;
+    if (options.departingGroup) base.populationGroups=[{
+      id:'leaving',name:'轮班人员',size:3,homeId:'hall',
+      work:{locationId:'archive',task:'交接名册',from:480,by:482,leave:540,homeBy:545},
+    }];
     base.queue = base.queue.filter(event => event.at >= base.time);
     const input = options.whisper ? '我对艾琳耳语：“官员们怎么还没来？”' : '“官员们怎么还没来？”我说道';
     const cmd = {input,requestId:randomUUID(),version:0};
@@ -63,6 +68,18 @@ const read = (path:string,id:string): WorldState => {
 };
 
 describe('原地补答已提交的提问', () => {
+  it('提问时三人在场、两分钟后已全部离开，不能用旧名单补答',async () => {
+    const {path,id,initial}=await failedSave({departingGroup:true});
+    const world=read(path,id);
+    expect(world.time).toBe(482);
+    expect(world.history.find(e=>e.source==='speech')?.utterance?.groups).toEqual([
+      {groupId:'leaving',name:'轮班人员',count:3,firstSlot:1}]);
+    expect(initial.turns[0].replyRetry).toBeUndefined();
+    const generate=vi.fn(()=>({text:answer,factIds:[]}));
+    expect((await retry(server(path,{dialogue:generate}),id)).statusCode).toBe(409);
+    expect(generate).not.toHaveBeenCalled();
+    expect(read(path,id).history.some(e=>e.source==='dialogue-retry')).toBe(false);
+  });
   it.each([false,true])('补答只生成台词，不重复身体动作或发言；快照各自回放实际听到的答复（私语 %s）',async whisper => {
     const {path,id,initial} = await failedSave({physical:true,whisper});
     expect(initial.turns[0].replyRetry?.speaker).toBe('艾琳');
