@@ -1,7 +1,7 @@
 import { groupCountAt, type Character, type LLMProvider, type Observation, type WorldState } from "@worldsim/shared";
 import { commitNpcAction } from "./npc-action";
 import { npcTextIsPrivate } from "./npc-dialogue";
-import { inLocation, perceive, player, record } from "./state";
+import { blockedRoute, inLocation, perceive, player, record } from "./state";
 
 /** Ordinary populations advance by timetable. Only record the change a player
  * staying in this room could witness; distant rooms need no movement logs. */
@@ -42,7 +42,7 @@ function nextStep(world:WorldState, start:string, goal:string):string|undefined 
   for (let i=0; i<queue.length; i++) {
     const current = queue[i];
     for (const next of world.locations.find(l => l.id === current.id)?.exits ?? []) {
-      if (visited.has(next)) continue;
+      if (visited.has(next) || blockedRoute(world,current.id,next,false)) continue;
       const first = current.first || next;
       if (next === goal) return first;
       visited.add(next);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import type { ScenarioDefinition, ScenarioInput } from '@worldsim/shared'
 import { defaultScenarioSetup } from '@worldsim/shared/scenario-setup'
 import { Icon } from './Icon'
@@ -41,6 +41,60 @@ function replaceAt<T>(list: T[], index: number, value: T) {
   return list.map((item, i) => i === index ? value : item)
 }
 
+function EventImpactFields({ event, locations, names, update }: {
+  event: Event, locations: Location[], names: string[], update: (change: Partial<Event>) => void
+}) {
+  const situation = event.situation
+  const namesId = useId()
+  return <details className="scenario-details">
+    <summary>事件影响</summary>
+    <div className="editor-body">
+      <label className="editor-check"><input type="checkbox" checked={event.public ?? false}
+        onChange={e => update({ public: e.target.checked || undefined })}/>全局通告（各地都能收到）</label>
+      {situation ? <>
+        <label className="field">局势名称<input required maxLength={80} list={namesId} value={situation.id}
+          onChange={e => update({ situation: { ...situation, id: e.target.value } })}/></label>
+        <datalist id={namesId}>{names.map(name => <option key={name} value={name}/>)}</datalist>
+        <p className="form-note">后续事件填写相同名称，就会更新这条局势。</p>
+        <label className="field">局势摘要<textarea required rows={2} maxLength={600} value={situation.summary}
+          onChange={e => update({ situation: { ...situation, summary: e.target.value } })}/></label>
+        {locations.length > 1 && <details className="scenario-details">
+          <summary>双向路段限制（{situation.blockedRoutes.length}）</summary>
+          <div className="editor-body">
+            <p className="form-note">设置本次事件生效后，这条局势对各路段的影响。</p>
+            {locations.slice(1).map((to, i) => {
+              const from = locations[i]
+              const sameRoute = (route: typeof situation.blockedRoutes[number]) =>
+                (route.from === from.id && route.to === to.id) || (route.from === to.id && route.to === from.id)
+              const restrictions = situation.blockedRoutes.filter(sameRoute)
+              const mode = restrictions.some(route => route.mode === 'all') ? 'all' : restrictions[0]?.mode ?? ''
+              return <label key={from.id + ':' + to.id} className="field">
+                {(from.name || '地点 ' + (i + 1)) + ' ↔ ' + (to.name || '地点 ' + (i + 2))}
+                <select value={mode} onChange={e => {
+                  const nextMode = e.target.value
+                  const blockedRoutes = situation.blockedRoutes.filter(route => !sameRoute(route))
+                  if (nextMode === 'vehicle' || nextMode === 'all') blockedRoutes.push({ from: from.id, to: to.id, mode: nextMode })
+                  update({ situation: { ...situation, blockedRoutes } })
+                }}>
+                  <option value="">正常通行（解除限制）</option>
+                  <option value="vehicle">仅禁止机动车通行</option>
+                  <option value="all">禁止所有通行</option>
+                </select>
+              </label>
+            })}
+          </div>
+        </details>}
+        <button type="button" className="text-button" onClick={() => update({ situation: undefined })}>
+          {situation.actions.length ? '移除局势及其行动分支' : '移除局势'}
+        </button>
+      </> : <button type="button" className="secondary small"
+        onClick={() => update({ situation: { id: '', summary: '', blockedRoutes: [], actions: [] } })}>
+        <Icon name="plus" size={14}/>添加持续局势
+      </button>}
+    </div>
+  </details>
+}
+
 export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
   initial?: ScenarioDefinition, busy: boolean, error: string, onSave: (value: ScenarioInput) => void, onCancel: () => void
 }) {
@@ -50,13 +104,24 @@ export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
   useEffect(() => { heading.current?.focus() }, [])
   const [validation, setValidation] = useState('')
   const events = draft.events ?? []
+  const situationNames = [...new Set(events.map(e => e.situation?.id.trim()).filter((name): name is string => !!name))]
   const updatePlace = (i: number, update: Partial<Location>) =>
     setDraft({ ...draft, locations: replaceAt(draft.locations, i, { ...draft.locations[i], ...update }) })
   function removePlace(id: string) {
+    const usesRoute = (route: { from: string, to: string }) => route.from === id || route.to === id
+    if (events.some(event => event.situation?.actions.some(action =>
+      action.locationId === id || action.next.blockedRoutes.some(usesRoute)))) {
+      setValidation('此地点仍被局势的行动分支使用。要保留这些分支，请保留此地点。')
+      return
+    }
     // Require a new choice for characters/events that pointed to the removed place.
     const unplace = <T extends { locationId: string }>(row: T): T => row.locationId === id ? { ...row, locationId: '' } : row
     setDraft({ ...draft, locations: draft.locations.filter(place => place.id !== id), player: unplace(draft.player),
-      npcs: draft.npcs.map(unplace), events: events.map(unplace) })
+      npcs: draft.npcs.map(unplace), events: events.map(event => {
+        const row = unplace(event)
+        if (!row.situation?.blockedRoutes.some(usesRoute)) return row
+        return { ...row, situation: { ...row.situation, blockedRoutes: row.situation.blockedRoutes.filter(r => !usesRoute(r)) } }
+      }) })
   }
   function updateEvent(i: number, update: Partial<Event>) {
     setDraft({ ...draft, events: replaceAt(events, i, { ...events[i], ...update }) })
@@ -117,11 +182,12 @@ export function ScenarioEditor({ initial, busy, error, onSave, onCancel }: {
       <section className="editor-section"><h4>定时剧情事件</h4>
         {events.map((event, i) => <fieldset className="editor-block" key={i} aria-label={'定时剧情事件 ' + (i + 1)}>
           <div className="editor-grid">
-            <label className="field">开场后多少分钟<input type="number" min={1} max={1440} step={1} required value={event.afterMinutes || ''}
+            <label className="field">开场后多少分钟<input type="number" min={1} max={10080} step={1} required value={event.afterMinutes || ''}
               onChange={e => updateEvent(i, { afterMinutes: Number(e.target.value) })}/></label>
             <PlaceSelect locations={draft.locations} value={event.locationId} label="发生地点" onChange={locationId => updateEvent(i, { locationId })}/>
           </div>
           <label className="field">事件内容<textarea required rows={2} maxLength={600} value={event.text} onChange={e => updateEvent(i, { text: e.target.value })}/></label>
+          <EventImpactFields event={event} locations={draft.locations} names={situationNames} update={change => updateEvent(i, change)}/>
           <button type="button" className="text-button" onClick={() => setDraft({ ...draft, events: events.filter((_, n) => n !== i) })}>移除事件</button>
         </fieldset>)}
         <button type="button" className="secondary small" disabled={events.length >= 24}

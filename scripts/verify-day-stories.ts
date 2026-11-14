@@ -1,3 +1,4 @@
+import { quake } from './earthquake-story';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,13 +18,6 @@ const provider = createProvider(readLiveConfig(), attempt => {
 const output = process.argv[2] ?? join(tmpdir(),'worldsim-day-'+Date.now());
 mkdirSync(output,{recursive:true});
 console.log(output);
-const quake:ScenarioInput = {
-  title:'震动的工作日', worldInfo:'一座普通城市。主角今天独自在小工作室值班，家与公司均有停车位。',
-  opening:'早上八点，我在家，自己的小汽车停在家门口，笔记本电脑装在背包里。',
-  locations:[{id:'home',name:'家',description:'家门口有一处停车位。'},
-    {id:'office',name:'公司',description:'独立工作室，有工位、办公桌和楼前停车位。'}],
-  events:[{afterMinutes:360,locationId:'office',text:'城市发生地震。公司地板和窗框一阵明显摇晃，桌上的笔滚落在地。'}],
-};
 const darkroom:ScenarioInput = {
   title:'暗房的定时器',worldInfo:'一间自助胶片工作室，今晚只有我预约使用。',startTime:1140,
   opening:'晚上七点，我刚将一卷胶片放入冲洗罐，定时器还有十五分钟响。',
@@ -81,10 +75,9 @@ async function workday() {
   await s.once('把桌上这台笔记本电脑收回背包');
   await s.until('今天18:00',1080);
   await s.once('我带上背包，驾驶早上停在公司的那辆车回家，到家后停好车');
-  if(projectWorld(s.state()).location.id!=='home') await s.play('回家');
   await s.once('查看背包里早上那台笔记本电脑');
   await s.until('今天22:00',1320);
-  await s.once('我上床睡觉');
+  await s.once('我留下来休息');
 }
 async function photo() {
   const s=await session('photo',darkroom);
@@ -118,14 +111,16 @@ function verify(id:'quake'|'photo') {
   }
   const car=object(/汽车|轿车|私家车|小车/), pc=object(/笔记本|电脑/);
   const drives=log.world.history.flatMap(e=>e.changes).filter(c=>c.op==='move' && c.using===car);
-  assert.deepEqual(drives.map(c=>c.op==='move' && c.to),['office','home']);
+  assert.deepEqual(drives.map(c=>c.op==='move' && c.to),['office']);
   assert.equal(at('到公司停车位',pc).scope,'held');
   assert.equal(at('放到桌上',pc).scope,'scene');
   assert.match(at('打开笔记本电脑',pc).value,/开|工作|运行|使用|启动/);
-  assert.ok(log.world.history.some(e=>e.time===840 && e.noticeWitnessIds?.includes('player') && e.text.includes('地震')));
+  assert.ok(log.world.history.some(e=>e.time===840 && e.noticeWitnessIds?.includes('player') && e.text.includes('强震')));
   assert.equal(at('收回背包',pc).scope,'held');
-  assert.equal(at('到家后停好车',pc).locationId,'home');
-  assert.ok(log.world.history.some(e=>e.locationId==='home' && e.observedItemId===pc));
+  const returnAttempt = log.journal.find(row => row.input.includes('到家后停好车'));
+  assert.equal(returnAttempt?.place,'公司');
+  assert.notEqual(returnAttempt?.status,'resolved');
+  assert.equal(at('查看背包里早上',pc).locationId,'office');
   assert.ok(log.world.time>=1320);
 }
 const runs=await Promise.allSettled([workday(),photo()]);

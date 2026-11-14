@@ -5,7 +5,7 @@ import {
 } from "@worldsim/shared";
 import { npcContext, npcTextIsPrivate } from "./npc-dialogue";
 import { disclosureAudience, utterance, withinEarshot } from "./hearing";
-import { inLocation, knownFacts, player, record } from "./state";
+import { blockedRoute, inLocation, knownFacts, player, record } from "./state";
 
 export interface NpcActionChoice {
   proposal: NpcActionProposal;
@@ -76,6 +76,20 @@ function localEvidence(world: WorldState, npc: Character): WorldFact[] {
   return world.facts.filter(f => atLocation.has(f.id) && f.createdAt <= world.time && (f.type === "clue" || f.type === "public"));
 }
 
+/** A routine inspection stays complete until the observer has something new to inspect. */
+export function hasInspectedScene(world:WorldState, actor:Character) {
+  for (let i = world.history.length - 1; i >= 0; i--) {
+    const event = world.history[i];
+    if (event.source === "clock") continue;
+    if (event.npcAction?.actorId === actor.id && event.npcAction.kind === "inspect" &&
+        event.locationId === actor.locationId) return true;
+    if (event.noticeWitnessIds?.includes(actor.id) || event.utterance?.listenerIds.includes(actor.id)) return false;
+    if (event.locationId === actor.locationId && event.changes.some(c => c.op !== "clock") ||
+        event.changes.some(c => c.op === "move" && (c.to === actor.locationId || c.actor === actor.id))) return false;
+  }
+  return false;
+}
+
 /** The king and this officer must still be able to act on this exact, authorized order. */
 function canCarryOutOrder(world: WorldState, npc: Character, order?: NpcOrder): order is NpcOrder {
   const king = player(world);
@@ -109,11 +123,10 @@ export async function chooseNpcAction(world: WorldState, npc: Character, input: 
       }).slice(0,4);
     const forAction = ({speaker, revision:_, ...scene}: DialogueContext, audience: readonly string[], scope: "actor" | "audience") => NpcActionContextSchema.parse({
       ...scene, npc:speaker, trigger, recentActions:witnessedActions(world, actor, audience, scope),
-      exits:world.locations.filter(l => l.id !== room.id && room.exits.includes(l.id))
+      exits:world.locations.filter(l => l.id !== room.id && room.exits.includes(l.id) && !blockedRoute(world,room.id,l.id,false))
         .slice(0, 32).map(({id, name}) => ({id, name})),
-      // A healthy NPC can examine any room it occupies. Offering this option
-      // must not tell the planner whether an undiscovered clue exists there.
-      canInspect:true,
+      // Availability depends on observed changes, not on whether a secret clue exists.
+      canInspect:trigger !== "ambient" || !hasInspectedScene(world,actor),
       ...(appointments.length ? {appointments} : {}),
       ...(trigger === "addressed" && canCarryOutOrder(world, actor, order) ? {order:order.summary} : {}),
     });
@@ -177,7 +190,7 @@ export function commitNpcAction(world: WorldState, npc: Character, choice: NpcAc
   const changes: StateChange[] = [];
   if (proposal.kind === "move") {
     const dest = world.locations.find(l => l.id === proposal.destination);
-    if (!dest || dest.id === room.id || !room.exits.includes(dest.id)) return;
+    if (!dest || dest.id === room.id || !room.exits.includes(dest.id) || blockedRoute(world,room.id,dest.id,false)) return;
     changes.push({op:"move", actor:actor.id, to:dest.id});
     const from = {locationId:room.id, text:actor.name + "离开" + room.name + "，朝" + dest.name + "走去。"};
     const to = {locationId:dest.id, text:actor.name + "走进" + dest.name + "。"};

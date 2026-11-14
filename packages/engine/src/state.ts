@@ -61,6 +61,46 @@ export function visibleSceneState(world: WorldState) {
     .map(({scope,name,value,objectId}) => ({scope,name,value,...(objectId ? {objectId} : {})}));
 }
 
+type Situation = WorldState["situations"][number];
+
+function rememberLocalSituations(world:WorldState, actor:Character) {
+  for (const s of world.situations) {
+    if (inLocation(actor,s.locationId) && !s.witnesses.includes(actor.id)) s.witnesses.push(actor.id);
+  }
+}
+
+export function visibleSituations(world:WorldState, actor:Character = player(world)) {
+  return world.situations.flatMap(s => {
+    if (inLocation(actor,s.locationId) || s.witnesses.includes(actor.id)) return [s];
+    const last=s.lastReports.find(report=>report.actorId===actor.id);
+    return last ? [{...s,summary:last.summary,updatedAt:last.at,decisions:last.decisions,actions:[],blockedRoutes:[]}] : [];
+  });
+}
+
+// People away from a local update keep only what they had last confirmed.
+function rememberLastReports(prior:Situation | undefined, currentWitnesses:string[]) {
+  if (!prior) return [];
+  const reports=new Map(prior.lastReports.map(report=>[report.actorId,report]));
+  for (const actorId of prior.witnesses) {
+    reports.set(actorId,{actorId,summary:prior.summary,at:prior.updatedAt,decisions:[...prior.decisions]});
+  }
+  for (const id of currentWitnesses) reports.delete(id);
+  return [...reports.values()];
+}
+
+export function availableSituationActions(world:WorldState, situation:Situation, actor:Character = player(world)) {
+  if (actor.condition !== "healthy" || actor.journey ||
+      !(inLocation(actor,situation.locationId) || situation.witnesses.includes(actor.id))) return [];
+  return situation.actions.filter(action => (action.locationId ?? situation.locationId) === actor.locationId &&
+    world.time >= situation.startedAt + (action.availableAfterMinutes ?? 0));
+}
+
+/** Route constraints are bidirectional and physical, independent of who witnessed them. */
+export function blockedRoute(world:WorldState, from:string, to:string, vehicle:boolean) {
+  return world.situations.find(s => s.blockedRoutes.some(r =>
+    (r.mode === "all" || vehicle) && ((r.from === from && r.to === to) || (r.from === to && r.to === from))));
+}
+
 export function projectWorld(world: WorldState): PublicState {
   const king = player(world);
   const location = world.locations.find(l => l.id === king.locationId);
@@ -69,6 +109,7 @@ export function projectWorld(world: WorldState): PublicState {
   const failed = opening.find(e => e.npcFailure || e.dialogueSource === "fallback");
   const openingRetryable = !!failed && world.version === 0 && opening.every(e =>
     e.changes.every(c => c.op === "encounter") && (!e.npcAction || e === failed) && (!e.dialogueSource || e.dialogueSource === "fallback"));
+  const situations = visibleSituations(world, king);
   const notices = {
     encounter:"暂时无法确认开场会遇见谁。",
     decision:"本次开场没有取得有效的 NPC 行动。",
@@ -90,6 +131,8 @@ export function projectWorld(world: WorldState): PublicState {
       ...(king.goals.length ? {goal:king.goals.join("；")} : {}),
       items: [...carriedItems(world, king).map(({id, name, description}) => ({id, name, description})),
         ...world.sceneState.filter(e => e.scope === "held").map(e => ({id:e.objectId ?? "held/"+e.name,name:e.name,description:e.value}))] },
+    ...(situations.length ? {situations:situations.map(s => ({id:s.id,summary:s.summary,updatedAt:s.updatedAt,
+      actions:availableSituationActions(world,s,king).map(a=>a.summary),decisions:s.decisions.map(({at,outcome})=>({at,outcome}))}))} : {}),
     facts: knownFacts(world, king).map(f => ({id: f.id, text: f.content.text})),
   };
 }
@@ -179,17 +222,37 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
         }
         break;
       }
+      case "respondSituation": {
+        const situation=world.situations.find(s=>s.id===change.situationId);
+        const action=situation && availableSituationActions(world,situation).find(a=>a.id===change.actionId);
+        const definition=situation && world.queue.find(e=>e.id===situation.eventId)?.situation;
+        if (!situation || !action || !definition) throw new Error("当前不能执行这个局势行动。");
+        const lead=player(world);
+        const audience=world.characters.filter(c=>c.condition !== "dead" && inLocation(c,lead.locationId)).map(c=>c.id);
+        situation.lastReports=rememberLastReports(situation,audience);
+        situation.witnesses=audience;
+        if (action.next.playerGoal !== undefined) lead.goals=action.next.playerGoal === null ? [] : [action.next.playerGoal];
+        situation.summary=action.next.summary;
+        situation.blockedRoutes=structuredClone(action.next.blockedRoutes);
+        situation.actions=structuredClone(definition.actions.filter(a=>action.next.actions?.includes(a.id)));
+        situation.updatedAt=world.time;
+        situation.decisions.push({actionId:action.id,at:world.time,outcome:action.outcome});
+        break;
+      }
       case "depart": {
         const c = actor(change.actor);
         if (c.kind !== "player" || c.condition !== "healthy" || c.journey || change.arrivesAt <= world.time ||
+            blockedRoute(world,c.locationId,change.to,!!change.vehicle) ||
             !world.locations.find(l => l.id === c.locationId)?.exits.includes(change.to))
           throw new Error("角色无法开始这段路程。");
-        c.journey = {to:change.to,arrivesAt:change.arrivesAt};
+        rememberLocalSituations(world,c);
+        c.journey = {to:change.to,arrivesAt:change.arrivesAt,...(change.vehicle ? {vehicle:true} : {})};
         break;
       }
       case "move": {
         const c = actor(change.actor);
         if (c.condition !== "healthy" || (c.journey && (c.journey.to !== change.to || c.journey.arrivesAt !== world.time)) ||
+            (!c.journey && blockedRoute(world,c.locationId,change.to,!!(change.vehicle || change.using))) ||
             !world.locations.find(l => l.id === c.locationId)?.exits.includes(change.to))
           throw new Error("角色无法到达该地点。");
         if (change.using) {
@@ -201,9 +264,11 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
         }
         if (c.kind === "player")
           for (const asset of world.sceneState) if (asset.scope === "held") asset.locationId = change.to;
+        rememberLocalSituations(world,c);
         delete c.journey;
         if (c.kind === "player") world.sceneState = world.sceneState.filter(entry => entry.scope !== "self");
         c.locationId = change.to;
+        rememberLocalSituations(world,c);
         break;
       }
       case "relation": {
@@ -279,6 +344,20 @@ export function applyChanges(world: WorldState, changes: StateChange[]) {
         if (!event || event.status !== "pending" || (change.status === "executed" && event.at !== world.time))
           throw new Error("计划不能重复执行或提早发生。");
         event.status = change.status;
+        if (change.status === "executed" && event.situation) {
+          const definition = event.situation;
+          const prior = world.situations.find(s => s.id === definition.id);
+          const audience = world.characters.filter(c => c.condition !== "dead" && (event.perception === "public" ||
+            inLocation(c,event.locationId))).map(c=>c.id);
+          const updated:Situation = {
+            id:definition.id,eventId:event.id,locationId:event.locationId,summary:definition.summary,
+            startedAt:world.time,updatedAt:world.time,witnesses:audience,lastReports:rememberLastReports(prior,audience),
+            blockedRoutes:structuredClone(definition.blockedRoutes),decisions:prior?.decisions ?? [],
+            actions:structuredClone(definition.actions.filter(a=>!definition.initialActions || definition.initialActions.includes(a.id))),
+          };
+          if (prior) Object.assign(prior,updated);
+          else world.situations.push(updated);
+        }
         break;
       }
       case "clock":

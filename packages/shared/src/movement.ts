@@ -1,5 +1,5 @@
 export type MovementRequest =
-  | { kind: 'destination'; target:string; origin?:string; followUp?:true }
+  | { kind: 'destination'; target:string; origin?:string; followUp?:true; vehicle?:true }
   | { kind: 'missing' | 'ambiguous' | 'compound' };
 
 // Chinese permits both 动词 + 地点 and 朝/往 + 地点 + 动词. Read the whole
@@ -36,6 +36,9 @@ export function readMovement(text: string): MovementRequest | undefined {
   const sentence = text.trim().replace(/[。.!！]+$/u, '').trim().replace(/(?:吧|啦|喽)$/u, '').trim();
   if (/[“”‘’「」『』"'?？]|^(?:如果|假如|若是|假设)/u.test(sentence) || /(?:吗|么|是否|要不要|能不能)$/u.test(sentence)) return;
   let verb = stripManners(sentence.replace(mover, '').trim().replace(/^(?:先|试着|尝试)\s*/u, '').replace(posture, ''), leadingManner);
+  // Keep the mode only when the remaining clause is itself a direct movement.
+  const transport = /^(?:开车|驾车|乘车|坐车|骑车|驾驶(?:着)?(?:自己的)?(?:私家车|小汽车|汽车|轿车|车))\s*/u.exec(verb);
+  if (transport) verb = verb.slice(transport[0].length);
   const origin = fromPlace.exec(verb);
   if (origin) verb = stripManners(verb.slice(origin[0].length), leadingManner);
   // A path is an adjunct to the player's motion. Stop at its noun boundary
@@ -66,7 +69,7 @@ export function readMovement(text: string): MovementRequest | undefined {
   }
   if (directMove?.[1] === '到') operand = operand.replace(/去$/u, '');
   const target = operand.trim().replace(/^一趟\s*|\s*一趟$/gu, '');
-  return target ? {kind:'destination', target, ...(origin ? {origin:stripManners(origin[1], trailingManner)} : {}),
+  return target ? {kind:'destination', target, ...(transport || directMove?.[1].startsWith('驶') ? {vehicle:true} : {}), ...(origin ? {origin:stripManners(origin[1], trailingManner)} : {}),
     ...(separator || first.trim() !== firstClause ? {followUp:true} : {})} : {kind:'missing'};
 }
 

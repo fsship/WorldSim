@@ -5,7 +5,7 @@ import {
 import { impliedListener } from "./conversation";
 import { crowdAudienceName } from "./hearing";
 import { witnessedSpeech } from "./crowd-contact";
-import { inLocation, knownFacts, perceive, player, present } from "./state";
+import { inLocation, knownFacts, perceive, player, present, visibleSituations } from "./state";
 
 type DialogueFailure = "generation" | "validation" | "review" | "review_unavailable";
 type ReplyFailure = {failure:DialogueFailure; verdict?:DialogueContext["revision"]};
@@ -150,7 +150,14 @@ export function npcContext(world: WorldState, npc: Character, input: string, dec
   const history = opening ? [] : transcript(world, king, npc, privateText, currentSpeechEventId, replyAudience);
   const recentNotices = witnessedNotices(world, npc, privateText, replyAudience);
   const room = world.locations.find(room => room.id === npc.locationId);
-  const surroundings = room ? roomDescription(world,room) : undefined;
+  const reports = visibleSituations(world,npc).filter(s => {
+    const source = world.queue.find(e => e.id === s.eventId);
+    return source?.situation && !source.situation.actions.length && !s.decisions.length &&
+      !privateText(s.summary) && (!replyAudience || source.perception === "public" ||
+        replyAudience.every(id => s.witnesses.includes(id)));
+  }).sort((a,b) => b.updatedAt - a.updatedAt);
+  const surroundings = room && [roomDescription(world,room), ...reports.map(s =>
+    "第" + (Math.floor(s.updatedAt / 1440) + 1) + "天获知：" + s.summary)].join(" ");
   const community = world.populationGroups.find(g => g.representative?.id === npc.id);
   const workplace = community && world.locations.find(l => l.id === community.work.locationId);
   const duty = community && workplace ? "所在群体的事务是"+community.work.task+"，办理地点在"+workplace.name+"。" : npc.publicDuty;

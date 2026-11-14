@@ -7,6 +7,23 @@ import { runTurn } from './index';
 const kingRoom = (world: ReturnType<typeof createPalace>) => world.characters.find(c => c.kind === 'player')!.locationId;
 
 describe('玩家移动的原文与目的地', () => {
+  it('相同路线可以步行；模型漏掉明确的驾车方式也不能绕过车辆封路或暴露异地消息',async()=>{
+    const world = createPalace('vehicle-barrier');
+    const summary = '抢修员发现门轴松动，正在宫门内侧检查。';
+    world.situations.push({
+      id:'gate-repair',eventId:'gate-report',locationId:'gate',summary,
+      blockedRoutes:[{from:'gate',to:'hall',mode:'vehicle'}],actions:[],
+      startedAt:world.time,updatedAt:world.time,decisions:[],witnesses:[],lastReports:[],
+    });
+    const provider = Object.assign(new MockLLMProvider(), {interpret:async()=>({kind:'move' as const,destination:'gate'})});
+    const blocked = await runTurn(world,'我开车去宫门',provider);
+    expect(kingRoom(blocked.world)).toBe('hall');
+    expect(blocked.turn.narrative).toContain('无法驾乘通行');
+    expect(blocked.turn.narrative).not.toContain(summary);
+    const walked = await runTurn(blocked.world,'我步行去宫门',provider);
+    expect(kingRoom(walked.world)).toBe('gate');
+  });
+
   it.each([
     '我向宫门走去', '我朝着宫门快步走过去。', '往城门去！', '我快步走向王宫大门', '我动身前往宫门。',
     '我想去一趟宫门', '我到宫门去吧。', '请移步至宫门。', '我朝宫门的方向前进', '我赶赴宫门口', '我往宫门那里跑去',

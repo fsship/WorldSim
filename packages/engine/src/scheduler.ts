@@ -1,5 +1,6 @@
 import { groupCountAt, ScheduledEventSchema, type ScheduledEvent, type WorldState, type Observation, type WorldEvent } from "@worldsim/shared";
 import { inLocation, knownFacts, perceive, player, record } from "./state";
+import { hasInspectedScene } from "./npc-action";
 
 const QUEUE_LIMIT = 256;
 const MAX_WAIT_JUDGMENTS = 8;
@@ -64,7 +65,7 @@ function applyDue(world: WorldState, e: ScheduledEvent) {
 const PULSE_MINUTES = 5;
 const REGIONAL_MINUTES = 30;
 const MAX_TURN_PULSES = 6;
-type Interruption = boolean | "reading";
+type Interruption = boolean | "reading" | "action";
 type WaitMatcher = string | ((notices: string[]) => Promise<boolean>);
 type WorldPulse = (world: WorldState) => Promise<Observation[]>;
 type NextOpportunity = (world: WorldState, after: number) => number;
@@ -85,7 +86,9 @@ function nextPulse(at: number, interval = PULSE_MINUTES) {
  * timetable without constructing or waking an individual. */
 export function nextWorldOpportunity(world: WorldState, after: number, detailed: ReadonlySet<string>): number {
   const next = nextPulse(after);
-  if (world.characters.some(c => c.kind === "npc" && c.condition === "healthy" && !c.journey && detailed.has(c.locationId)))
+  if (world.characters.some(c => c.kind === "npc" && c.condition === "healthy" && !c.journey && detailed.has(c.locationId) &&
+      (c.plans.length || c.appointments?.some(a => a.until > after && a.from <= nextPulse(after,REGIONAL_MINUTES)) ||
+        !hasInspectedScene(world,c))))
     return next;
   const regional = nextPulse(after, REGIONAL_MINUTES);
   const king = player(world);

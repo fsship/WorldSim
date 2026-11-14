@@ -150,6 +150,9 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
     event.preventDefault(); void act(draft)
   }
+  const chooseAction = (action:string) => {
+    setDraft(action); open(null)
+  }
   const disabled = busy || !game
   return <div className="app-shell">
     <aside className="desktop-nav"><SideNav panel={panel} open={open} config={config} disabled={busy} hasGame={!!game} navigate={leaveForLogs}/></aside>
@@ -181,13 +184,13 @@ export function App({ navigate, active }: { navigate: Navigate, active: boolean 
             </form>
           </div>
         </div>
-        <div className="desktop-status"><Status state={game.state}/></div>
+        <div className="desktop-status"><Status state={game.state} onChoose={chooseAction} busy={busy}/></div>
       </div>}
     </main>
     {notice && <div className="toast" role="status"><Icon name="check" size={16}/>{notice}</div>}
     {active && panel && <Modal key={panel} title={panels[panel][0]} icon={panels[panel][1]} wide={panel === 'history' || panel === 'saves' || panel === 'new'} onClose={() => { if (!locked.current) setPanel(null) }}>
       {panel === 'nav' && <SideNav panel={panel} open={open} config={config} disabled={busy} hasGame={!!game} navigate={leaveForLogs}/>}
-      {panel === 'status' && game && <Status state={game.state}/>}
+      {panel === 'status' && game && <Status state={game.state} onChoose={chooseAction} busy={busy}/>}
       {panel === 'history' && game && <HistoryPanel game={game}/>}
       {panel === 'wait' && game && <WaitPanel busy={busy} time={game.state.time} onWait={input => void act(input, true)}/>}
       {panel === 'saves' && game && <SavesPanel game={game} setBusy={lock} onLoad={view => { switchGame(view); setNotice('游戏进度已载入') }}/>}

@@ -100,6 +100,39 @@ it('建局、行动和快照使用创建时的世界；编辑剧本只影响后�
   expect(saved).toContainEqual(expect.objectContaining({ id: fork.state.id, title: '夜渡 · 快照分支' }));
 });
 
+it('剧本库开始的地震局能暂停等待、保存分支，只公开已经知道的后果',async()=>{
+  const app=openApp();
+  expect((await app.inject('/api/scenarios')).json()).toContainEqual(expect.objectContaining({id:'quake-week',builtin:true}));
+  const game=await newGame(app,'quake-week');
+  const play=async(id:string,version:number,input:string)=>{
+    const reply=await app.inject({method:'POST',url:'/api/games/'+id+'/turns',payload:{requestId:'action-'+version,version,input}});
+    expect(reply.statusCode,reply.body).toBe(200);
+    return GameViewSchema.parse(reply.json());
+  };
+  const id=game.state.id;
+  let view=await play(id,0,'去公司');
+  while(view.state.time<840) {
+    const before=view.state.time;
+    view=await play(id,view.state.version,'等待'+(840-before)+'分钟');
+    expect(view.state.time).toBeGreaterThan(before);
+  }
+  expect(view.state.time).toBe(840);
+  const options=view.state.situations?.find(s=>s.id==='contact')?.actions;
+  expect(options).toHaveLength(2);
+  expect(JSON.stringify(view)).not.toContain('妈妈在小院门口举起');
+  const path='/api/games/'+id+'/snapshots';
+  const snapshot=await app.inject({method:'POST',url:path,payload:{version:view.state.version}});
+  expect(snapshot.statusCode,snapshot.body).toBe(200);
+  const chosen=await play(id,view.state.version,options![0]);
+  expect(chosen.state.player.goal).toContain('会合');
+  expect(chosen.state.situations?.find(s=>s.id==='contact')?.decisions).toHaveLength(1);
+  const restored=await app.inject({method:'POST',url:path+'/'+snapshot.json().id+'/load',payload:{}});
+  expect(restored.statusCode,restored.body).toBe(200);
+  const fork=GameViewSchema.parse(restored.json());
+  expect(fork.state.situations).toEqual(view.state.situations);
+  expect(fork.state.player.goal).toBe(game.state.player.goal);
+});
+
 it('非法引用或空名返回具体字段，错误的编辑不会替换原剧本', async () => {
   const app = openApp();
   const empty = await app.inject({ method: 'POST', url: '/api/scenarios', payload: { ...river, title: ' ' } });

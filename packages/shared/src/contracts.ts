@@ -30,6 +30,10 @@ const entity = z.object({ id: nonempty, name: nonempty }).strict();
 export const PublicStateSchema = z.object({
   id: nonempty, title: nonempty, scenarioId: nonempty.optional(), time: minute, version: minute, opening: nonempty,
   worldInfo: z.string().trim().min(1).max(2000).optional(),
+  situations:z.array(z.object({
+    id:nonempty, summary:nonempty, updatedAt:minute, actions:z.array(nonempty),
+    decisions:z.array(z.object({at:minute, outcome:nonempty}).strict()),
+  }).strict()).optional(),
   openingUsedFallback: z.boolean().optional(),
   openingRetryable: z.boolean().optional(),
   openingNotice: z.string().optional(),
@@ -109,6 +113,10 @@ export const ParseContextSchema = z.object({
   referents: z.array(parseReferentSchema).optional(),
   sceneState:z.array(sceneValueSchema.extend({objectId:referenceText.optional()})).optional(),
   localTime: minute.optional(),
+  situations:z.array(z.object({
+    id:referenceText, summary:nonempty, updatedAt:minute, location:nonempty,
+    actions:z.array(z.object({id:referenceText,summary:nonempty}).strict()),
+  }).strict()).optional(),
   currentNotices:z.array(z.object({id:referenceText, text:nonempty}).strict()).max(8).optional(),
   allowRoutineEvent: z.boolean().optional(),
   allowExploration: z.boolean().optional(),
@@ -140,14 +148,15 @@ export const TurnPlanSchema = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('itinerary'), steps:z.array(z.object({
     kind:z.enum(['travel','local']), source:ActionTextSchema,
   }).strict()).min(2).max(8)}).strict(),
+  z.object({kind:z.literal('respond'), situationId:referenceText, actionId:referenceText, source:ActionTextSchema}).strict(),
   z.object({kind:z.literal('sequence'), steps:z.array(stepSchema).min(1).max(8)}).strict(),
   z.object({kind:z.literal('clarify')}).strict(),
   z.object({kind:z.literal('assert')}).strict(),
   z.object({kind:z.literal('seekContact'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('look'), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('ride'), noticeId:referenceText, destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('explore'), using:referenceText.optional(), via:z.object({noticeId:referenceText, method:sceneLabel}).strict().optional(), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
-  z.object({kind:z.literal('move'), destination:referenceText, using:referenceText.optional(), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('explore'), vehicle:z.literal(true).optional(), using:referenceText.optional(), via:z.object({noticeId:referenceText, method:sceneLabel}).strict().optional(), destination:z.string().trim().min(1).max(80), source:ActionTextSchema.optional()}).strict(),
+  z.object({kind:z.literal('move'), destination:referenceText, vehicle:z.literal(true).optional(), using:referenceText.optional(), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('item'), itemId:referenceText, interaction:z.enum(['use', 'inspect', 'handle_inspect']),
     inventoryOnly:z.boolean().optional(), source:ActionTextSchema.optional()}).strict(),
   z.object({kind:z.literal('investigate'), focus:referenceText, source:ActionTextSchema.optional()}).strict(),
@@ -235,8 +244,14 @@ export function turnPlanSchemaFor(context: ParseContext) {
       if (!context.sceneState?.some(entry => entry.objectId === id))
         ctx.addIssue({code:'custom',message:'出行物品必须当前可接触'});
     }
+    if (plan.kind === 'respond') {
+      const {situationId,actionId,source} = plan;
+      if (!context.situations?.some(s => s.id === situationId && s.actions.some(a => a.id === actionId)) ||
+          !outside.some(([a,b]) => context.text.slice(a,b).includes(source)))
+        ctx.addIssue({code:'custom',message:'局势行动必须当前可执行，并引用玩家在引语外亲自选择的动作'});
+    }
     if (context.segment) {
-      const allowed = context.segment === 'local' ? ['sequence','item','clarify','unavailable'] :
+      const allowed = context.segment === 'local' ? ['sequence','respond','item','clarify','unavailable'] :
         ['move','explore','ride','clarify','unavailable'];
       if (!allowed.includes(plan.kind)) ctx.addIssue({code:'custom',message:'按当前步骤类型执行'});
     }

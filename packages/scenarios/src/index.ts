@@ -1,16 +1,19 @@
 import { arrivalCharacter, WorldStateSchema, type Character, type ReadableDocument, type WorldFact, type ScheduledEvent, type WorldState } from "@worldsim/shared";
+import { quake } from './earthquake';
 import { createCustomScenario, lighthouse } from './authored';
 export { ScenarioDefinitionSchema, type ScenarioDefinition } from '@worldsim/shared';
 export { createCustomScenario } from './authored';
 
 export const BUILTIN_SCENARIOS = [
   {id:'palace', title:'王宫疑云', description:'晨会将在一刻钟后开始。你是国王，卫队长与宫廷侍从已在议事厅候命。'},
+  {id:'quake-week', title:quake.title, description:'周一出门时，家人还等你下班。下午两点，回家的路断了。'},
   {id:'lighthouse', title:lighthouse.title, description:'海雾封住航道。你是灯塔的值班员，得赶在渡船进港前查明灯号。'},
 ] as const;
 
 export function createBuiltinScenario(scenarioId:string, gameId:string): WorldState {
   switch (scenarioId) {
     case 'palace': return createPalace(gameId);
+    case 'quake-week': return createCustomScenario(scenarioId, gameId, quake);
     case 'lighthouse': return createCustomScenario(scenarioId, gameId, lighthouse);
     default: throw new Error('找不到这个内置剧本。');
   }

@@ -34,7 +34,8 @@ export function createCustomScenario(scenarioId:string, gameId:string, definitio
   }
   const queue:WorldState['queue'] = (draft.events ?? []).map((event, index) => ({
     id:'event-' + String(index + 1).padStart(2, '0'), at:startTime + event.afterMinutes, text:event.text,
-    type:'notice', perception:'local', important:true, status:'pending', locationId:event.locationId,
+    type:'notice', perception:event.public ? 'public' : 'local', important:true, status:'pending', locationId:event.locationId,
+    ...(event.situation ? {situation:event.situation} : {}),
     entities:[], condition:{}, recipients:[], effects:[],
   }));
   return WorldStateSchema.parse({

@@ -7,7 +7,7 @@ import { adjudicate, refused, type ActionMeaning, type Adjudication } from "./ac
 import { impliedListener, lastNpcLine } from "./conversation";
 import { crowdReferent, groupForContact } from "./crowd-contact";
 import { considerEncounter, offlineSeeksContact } from "./encounter";
-import { visibleSceneState, hasOpenMap, player, present, record } from "./state";
+import { availableSituationActions, visibleSituations, visibleSceneState, hasOpenMap, player, present, record } from "./state";
 
 interface Interpretation {
   intent: ActionIntent;
@@ -66,7 +66,12 @@ function sceneContext(world: WorldState, king: Character, text: string): ParseCo
       previousWait = event.pendingWait;
     break;
   }
+  const situations = visibleSituations(world,king).map(s => ({
+    id:s.id, summary:s.summary, updatedAt:s.updatedAt, location:world.locations.find(l=>l.id===s.locationId)!.name,
+    actions:availableSituationActions(world,s,king).map(({id,summary}) => ({id,summary})),
+  }));
   return {
+    ...(situations.length ? {situations,localTime:world.time} : {}),
     text, location:room.name, surroundings:roomDescription(world,room).slice(0,800), referents,
     ...(world.worldInfo ? {worldInfo:world.worldInfo, openingSituation:world.history.find(event =>
       event.source === "opening" && event.kind === "world" && event.recipients.includes(king.id) && event.perception !== "private")?.text} : {}),
@@ -101,8 +106,10 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
     ({intent, plan, resolution:refused(text)});
   const run = (intent: ActionIntent, args: Omit<PlayerInput, "intent"> = {}, meaning: ActionMeaning = {}, words?: string): Interpretation =>
     ({intent, plan, words, resolution:adjudicate(world, context.text, intent, {intent, ...args}, meaning)});
-  const move = (to:string, using?:string) => {
-    const result = run({kind:"move",target:to},{movement:{kind:"destination",target:to}});
+  const move = (to:string, using?:string, vehicle = false) => {
+    const requested = readMovement(context.text);
+    const byVehicle = vehicle || !!using || (requested?.kind === "destination" && requested.vehicle === true);
+    const result = run({kind:"move",target:to},{movement:{kind:"destination",target:to}},{vehicle:byVehicle});
     if (!using) return result;
     const asset = visibleSceneState(world).find(entry => entry.objectId === using);
     if (!asset) return rejected("出行物品不在这里。");
@@ -120,6 +127,18 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
       candidates:[{id:"sequence", status:"resolved", minutes:0, changes:[], lines:[]}],
       checks:["按顺序核对每一步的现场条件"], waiting:false, askModel:false,
     }};
+    case "respond": {
+      const lead = player(world);
+      const situation = visibleSituations(world,lead).find(s => s.id === plan.situationId);
+      const action = situation && availableSituationActions(world,situation,lead).find(a => a.id === plan.actionId);
+      if (!action || !situation) return rejected("当前无法执行这项应对措施。");
+      return {plan, intent:{kind:"attempt"}, resolution:{
+        candidates:[{id:action.id,status:"resolved",minutes:action.minutes,
+          changes:[{op:"respondSituation",situationId:situation.id,actionId:action.id}],
+          lines:[{kind:"world",text:action.outcome}]}],
+        checks:["局势允许这一选择，玩家在现场明确采取行动"], waiting:false, askModel:false,
+      }};
+    }
     case "clarify": return rejected("这句话还不能确定你现在要做什么。请说明这回合想亲自做的事。");
     case "assert": return run({kind:"assert"});
     case "look": return run({kind:"look"});
@@ -140,7 +159,7 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
           locationId:from, perception:"addressed", recipients:[player(world).id],
           changes:[{op:"discoverPlace", from, to, name:plan.destination}]});
       }
-      const result = move(to,plan.kind === "explore" ? plan.using : undefined);
+      const result = move(to,plan.kind === "explore" ? plan.using : undefined, plan.kind === "ride" || !!plan.via || !!plan.vehicle);
       const travel = result.resolution.candidates[0];
       const method = plan.kind === "ride" ? "刚刚到站的车" : plan.via?.method;
       if (method && travel.id === "travel") {
@@ -154,7 +173,7 @@ function executeMeaning(world: WorldState, context: ParseContext, plan: Exclude<
       if (!offered("place", plan.destination)) return rejected(context.exits.length
         ? "从" + context.location + "可直达" + context.exits.join("、") + "。"
         : "这里没有可走的出口。", intent);
-      return move(plan.destination,plan.using);
+      return move(plan.destination,plan.using,plan.vehicle);
     }
     case "item": {
       const intent: ActionIntent = {kind:"use", item:plan.itemId};
@@ -241,6 +260,14 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
     if (notices.length) context.currentNotices = notices.slice(-8).map(({id,text}) => ({id,text}));
   }
   if (segment) context.segment = segment;
+  if (context.situations?.length && segment !== "travel") {
+    const normalize = (s:string) => s.trim().replace(/[。！!]+$/u,"").trim();
+    const clause = normalize(text);
+    const choices = context.situations.flatMap(s => s.actions.filter(action =>
+      [clause,clause.replace(/^我(?:选择|决定)?/u,"")].includes(normalize(action.summary)))
+      .map(action => ({kind:"respond" as const,situationId:s.id,actionId:action.id,source:text})));
+    if (choices.length === 1) return executeMeaning(world,context,choices[0]);
+  }
   if (provider.interpret) {
     if (dynamic) context.allowEncounter = true;
     const plan = turnPlanSchemaFor(context).parse(await provider.interpret(structuredClone(context)));
@@ -278,7 +305,7 @@ export async function interpretTurn(world: WorldState, text: string, provider: L
     const trip = readMovement(first);
     if (trip?.kind === "destination" && !trip.origin && /^[\p{L}\p{N}· -]{1,80}$/u.test(trip.target) &&
         (first !== text || !movementLocations(world.locations, trip.target).length))
-      return executeMeaning(world, context, {kind:"explore", destination:trip.target});
+      return executeMeaning(world, context, {kind:"explore", destination:trip.target, vehicle:trip.vehicle});
   }
   const parsed = explicit?.reading ? explicit.intent : ActionIntentSchema.parse(await provider.parse(context));
   const intent = explicit?.intent ?? parsed;

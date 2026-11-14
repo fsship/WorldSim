@@ -1,3 +1,4 @@
+import { activeSituationSchema, situationDefinitionSchema } from "./situation";
 import { z } from "zod";
 import { sceneValueSchema, ActionIntentSchema, DialogueVerdictSchema, PendingWaitSchema, PublicTurnSchema, TurnPlanSchema } from "./contracts";
 import { PopulationGroupSchema } from "./population";
@@ -20,7 +21,7 @@ export type ReadableDocument = z.infer<typeof readableDocumentSchema>;
 
 export const characterSchema = z.object({
   id, kind: z.enum(["player", "npc"]), name: id, aliases: z.array(id), role: id, publicDuty: id.optional(), locationId: id,
-  journey:z.object({to:id, arrivesAt:minute}).strict().optional(),
+  journey:z.object({to:id, arrivesAt:minute, vehicle:z.literal(true).optional()}).strict().optional(),
   condition: z.enum(["healthy", "detained", "dead"]),
   attributes: z.record(z.string(), z.number().int().min(0).max(10)),
   abilities: z.array(id), inventory: z.array(id), knownFactIds: z.array(id),
@@ -53,16 +54,17 @@ export const scheduledEventSchema = z.object({
   status: z.enum(["pending", "executed", "cancelled"]),
   condition: z.object({ activeActor: id.optional(), knows: id.optional(), presentAt: id.optional(), flag: id.optional(), equals: z.boolean().optional() }).strict(),
   locationId: id, perception: visibility, recipients: z.array(id),
-  important: z.boolean(), text: id, effects: z.array(flagChange), arrival:arrivalSchema.optional(),
+  important: z.boolean(), text: id, effects: z.array(flagChange), situation:situationDefinitionSchema.optional(), arrival:arrivalSchema.optional(),
 }).strict();
 export type ScheduledEvent = z.infer<typeof scheduledEventSchema>;
 
 export const stateChangeSchema = z.discriminatedUnion("op", [
+  z.object({op:z.literal("respondSituation"),situationId:id,actionId:id}).strict(),
   z.object({op:z.literal("openingAssets"),locationId:id,assets:z.array(z.object({scope:z.enum(["held","scene"]),name:id,value:id}).strict()).max(32)}).strict(),
   z.object({op:z.literal("sceneStep"), locationId:id, sets:z.array(sceneValueSchema).max(4), clears:z.array(sceneValueSchema).max(4).optional()}).strict(),
-  z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute}).strict(),
+  z.object({op:z.literal("depart"), actor:id, to:id, arrivesAt:minute, vehicle:z.literal(true).optional()}).strict(),
   z.object({ op:z.literal("discoverPlace"), from:id, to:id, name:z.string().trim().min(1).max(80) }).strict(),
-  z.object({ op: z.literal("move"), actor: id, to: id, using:id.optional() }).strict(),
+  z.object({ op: z.literal("move"), actor: id, to: id, using:id.optional(), vehicle:z.literal(true).optional() }).strict(),
   z.object({ op:z.literal("meet"), group:id, locationId:id }).strict(),
   z.object({
     op:z.literal("encounter"), locationId:id, trigger:z.enum(["opening", "arrival", "contact", "event"]), cue:id.optional(),
@@ -89,6 +91,9 @@ export const worldEventSchema = z.object({
   bookmark: z.object({ documentId: id, nextIndex: z.number().int().nonnegative() }).strict().optional(),
   observedItemId: id.optional(),
   pendingWait: PendingWaitSchema.optional(),
+  pendingResponse: z.object({
+    situationId:id, actionId:id, eventId:id, updatedAt:minute, remaining:minute,
+  }).strict().optional(),
   utterance: z.object({ speakerId: id, listenerIds: z.array(id), private: z.boolean().optional(),
     groups:z.array(z.object({groupId:id, name:id, count:z.number().int().positive(), firstSlot:z.number().int().positive().optional()}).strict()).optional(),
   }).strict().optional(),
@@ -138,6 +143,7 @@ export const worldStateSchema = z.object({
     .default([]),
   items: z.array(z.object({ ...sceneObject, locationId:id.optional(), description:id, appearance:id.optional() }).strict()),
   facts: z.array(worldFactSchema), queue: z.array(scheduledEventSchema),
+  situations:z.array(activeSituationSchema).default([]),
   sceneState:z.array(sceneValueSchema.extend({locationId:id, objectId:id.optional()})).default([]),
   history: z.array(worldEventSchema), variables: vars,
 }).strict();

@@ -9,7 +9,7 @@ import { advanceRegion, observePopulation } from "./regional";
 import { createTurnClock, nextWorldOpportunity, scheduleEvent } from "./scheduler";
 import { readDocument } from "./reading";
 import { considerEncounter } from "./encounter";
-import { visibleSceneState, perceive, player, present, projectWorld, record } from "./state";
+import { availableSituationActions, visibleSceneState, perceive, player, present, projectWorld, record } from "./state";
 
 export { projectWorld, perceive, knownFacts } from "./state";
 export { scheduleEvent, cancelEvent, rescheduleEvent } from "./scheduler";
@@ -49,6 +49,11 @@ async function narrate(observations: Observation[], provider: LLMProvider) {
   }).join("\n");
 }
 
+function unexecutedActions(rest:string):string {
+  const quoted = rest.replace(/^[\s，,。.;；、]+|[\s，,。.;；、]+$/gu,"");
+  return quoted ? "后续的「" + quoted + "」尚未执行。" : "";
+}
+
 export async function runTurn(previous: WorldState, input: string, provider: LLMProvider): Promise<{world: WorldState; turn: GameTurn}> {
   const text = ActionTextSchema.parse(input);
   // Zod constructs an independent working state. Nothing in the caller's save is touched by a failed turn.
@@ -74,6 +79,11 @@ export async function runTurn(previous: WorldState, input: string, provider: LLM
     observations.push(...turn.observations.map(o => ({...o,time:o.time ?? turn.endTime})));
     if (turn.resolution.status !== "resolved") {
       status = completed ? "uncertain" : turn.resolution.status;
+      const note = unexecutedActions(first.plan.steps.slice(completed + 1).map(s=>s.source).join("，"));
+      if (note) {
+        observations.push({kind:"system",text:note,time:turn.endTime});
+        narratives.push(note);
+      }
       break;
     }
     completed++;
@@ -129,6 +139,7 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
       provider, "addressed", order, speechEventId, resolution.speech?.private));
   }
   const trip = choice.changes.find(c => c.op === "move" && c.actor === king.id);
+  const response = choice.changes.find(c => c.op === "respondSituation");
   const duration = Math.min(minutes, world.rules.maxShort, world.rules.maxWait);
   let waitEvent: WorldEvent | undefined;
   const commitAction = () => {
@@ -145,8 +156,8 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
   if (trip?.op === "move") {
     record(world,{source:"departure", kind:"world", text:king.name + "离开了" + view.location.name + "。",
       perception:"addressed", recipients:present(world,king).filter(c => c.condition !== "dead").map(c => c.id),
-      locationId:king.locationId, changes:[{op:"depart",actor:king.id,to:trip.to,arrivesAt:world.time + duration}]});
-  } else if (plan?.kind !== "sequence") commitAction();
+      locationId:king.locationId, changes:[{op:"depart",actor:king.id,to:trip.to,arrivesAt:world.time + duration, ...(trip.vehicle ? {vehicle:true as const} : {})}]});
+  } else if (plan?.kind !== "sequence" && !response) commitAction();
   if (resolution.reading) {
     for (const observation of observations) observation.time = world.time;
   }
@@ -192,7 +203,11 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
   if (plan?.kind === "sequence") {
     interrupted = false;
     let completed = 0;
+    let sourceEnd = 0;
     for (const step of plan.steps) {
+      // The validated sources occur in order. The original tail can include a
+      // requested action omitted from the plan after the first blocked step.
+      sourceEnd = text.indexOf(step.source,sourceEnd) + step.source.length;
       const state = visibleSceneState(world);
       const preconditions = [...step.requires ?? [], ...step.clears ?? []];
       const missing = preconditions.find(need => !state.some(entry =>
@@ -200,7 +215,7 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
       if (step.blocked || missing || king.condition !== "healthy" || king.journey) {
         const reason = missing ? "当前条件不满足：" + missing.name + "需要处于“" + missing.value + "”状态。" :
           step.blocked ? step.text : "你现在无法继续。";
-        const event = record(world,{source:"action",kind:"system",text:reason,locationId:king.locationId,
+        const event = record(world,{source:"action",kind:"system",text:reason + unexecutedActions(text.slice(sourceEnd)),locationId:king.locationId,
           recipients:[king.id],perception:"addressed",changes:[]});
         observations.push({kind:"system",text:event.text,time:event.time});
         choice.status = completed ? "uncertain" : "refused";
@@ -216,7 +231,10 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
       completed++;
       interrupted = await clock.advance(1,true);
       if (interrupted) {
-        if (completed < plan.steps.length) choice.status = "uncertain";
+        if (completed < plan.steps.length) {
+          choice.status = "uncertain";
+          observations.push({kind:"system",text:unexecutedActions(text.slice(sourceEnd)),time:world.time});
+        }
         break;
       }
     }
@@ -226,6 +244,34 @@ async function executeSegment(world:WorldState,text:string,provider:LLMProvider,
       const encounter = await considerEncounter(world, provider, "arrival");
       const observation = encounter && perceive(encounter, world);
       if (observation) observations.push({...observation, time:world.time});
+    }
+  } else if (response) {
+    // Finish the choice only after its full cost, so an intervening notice can change the situation.
+    const initial = world.situations.find(s => s.id === response.situationId)!;
+    const {eventId, updatedAt} = initial;
+    const lastAction = world.history.at(-1);
+    const resume = lastAction?.time === startTime && lastAction.locationId === king.locationId ? lastAction.pendingResponse : undefined;
+    const remaining = resume?.situationId === initial.id && resume.actionId === response.actionId &&
+      resume.eventId === eventId && resume.updatedAt === updatedAt ? resume.remaining : minutes;
+    interrupted = await clock.advance(remaining,"action");
+    const current = world.situations.find(s => s.id === response.situationId);
+    const stillAvailable = current?.eventId === eventId && current.updatedAt === updatedAt &&
+      availableSituationActions(world,current,king).some(a => a.id === response.actionId);
+    const left = remaining - (world.time - startTime);
+    if (left === 0 && stillAvailable) {
+      const beforeResponse = observations.length;
+      commitAction();
+      for (const line of observations.slice(beforeResponse)) line.time = world.time;
+    } else {
+      choice.status = "uncertain";
+      const pendingResponse = stillAvailable && left > 0 ? {
+        situationId:response.situationId,actionId:response.actionId,eventId,updatedAt,remaining:left,
+      } : undefined;
+      const note = record(world,{source:"action",kind:"system",
+        text:pendingResponse ? "行动暂停。你可以继续这项行动，还需" + left + "分钟。" : "现场情况已经变化，原定行动未能完成。",
+        ...(pendingResponse ? {pendingResponse} : {}),
+        locationId:king.locationId,perception:"addressed",recipients:[king.id],changes:[]});
+      observations.push({kind:"system",text:note.text,time:world.time});
     }
   } else if (resolution.reading) {
     interrupted = await readDocument(world, resolution.reading, observations, minutes, clock);

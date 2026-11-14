@@ -18,6 +18,7 @@ it('部分完成的步骤在读档后仍然生效，失败步骤和后续步骤�
   expect(result.turn.resolution.status).toBe('uncertain');
   expect(result.world.time).toBe(start.time+1);
   expect(result.turn.narrative).not.toContain('写下');
+  expect(result.turn.narrative).toContain('「写字」尚未执行');
   const loaded = WorldStateSchema.parse(JSON.parse(JSON.stringify(result.world)));
   expect(loaded.sceneState).toEqual([{...lamp,locationId:'start'}]);
   const used = await runTurn(loaded,'借着灯光拿起铅笔',interpret({kind:'sequence',steps:[
@@ -32,6 +33,31 @@ it('部分完成的步骤在读档后仍然生效，失败步骤和后续步骤�
   ]}));
   expect(projectWorld(put.world).player.items).toHaveLength(0);
   expect(projectWorld(put.world).location.description).toContain('铅笔');
+});
+
+it('受阻的末步没有列出后文时仍从原文告知尚未执行的动作',async()=>{
+  const place = {scope:'self' as const,name:'位置',value:'工具间'};
+  const start = world();
+  const result = await runTurn(start,'走进工具间，拉开抽屉，拿出扳手',interpret({kind:'sequence',steps:[
+    {source:'走进工具间',text:'你走进工具间。',sets:[place]},
+    {source:'拉开抽屉',text:'抽屉还锁着。',blocked:true},
+  ]}));
+  expect(result.turn.resolution.status).toBe('uncertain');
+  expect(result.turn.narrative).toContain('抽屉还锁着。后续的「拿出扳手」尚未执行。');
+  expect(result.world.sceneState).toEqual([{...place,locationId:'start'}]);
+});
+
+it('行程首段失败时点明尚未执行的目的地内操作',async()=>{
+  const start = world();
+  const result = await runTurn(start,'前往展厅，在展台上签到',Object.assign(new MockLLMProvider(),{
+    interpret:async (ctx:import('@worldsim/shared').ParseContext):Promise<TurnPlan> => ctx.segment === 'travel' ?
+      {kind:'unavailable',subject:'place'} : {kind:'itinerary',steps:[
+        {kind:'travel',source:'前往展厅'},{kind:'local',source:'在展台上签到'}]},
+  }));
+  expect(result.turn.resolution.status).toBe('refused');
+  expect(result.turn.observations.at(-1)?.text).toBe('后续的「在展台上签到」尚未执行。');
+  expect(result.world.time).toBe(start.time);
+  expect(result.world.sceneState).toEqual(start.sceneState);
 });
 
 it('同一回合移动后在新现场解析后续动作；若条件不成立则保留已完成的移动',async () => {

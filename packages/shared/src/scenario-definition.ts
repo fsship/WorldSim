@@ -1,3 +1,4 @@
+import { situationDefinitionSchema } from './situation';
 import { z } from 'zod';
 import { defaultScenarioSetup } from './scenario-setup';
 
@@ -18,7 +19,8 @@ const definitionFields = z.object({
   player:person,
   npcs:z.array(person.extend({duty:note})).max(16, '最多支持 16 个配角'),
   events:z.array(z.object({
-    afterMinutes:z.number().int().min(1).max(1440), locationId:placeId,
+    afterMinutes:z.number().int().min(1).max(10080), locationId:placeId,
+    public:z.boolean().optional(), situation:situationDefinitionSchema.optional(),
     text:z.string().trim().min(1, '请填写事件内容').max(600, '事件文字不能超过 600 字'),
   }).strict()).max(24, '最多支持 24 个剧情事件').optional(),
 }).strict();
@@ -42,7 +44,25 @@ const validatedDefinition = definitionFields.superRefine((definition, ctx) => {
     if (people.has(npc.name)) ctx.addIssue({code:'custom', path:['npcs', i, 'name'], message:'人物姓名重复'});
     people.add(npc.name);
   }
-  definition.events?.forEach((event, i) => checkPlace(event.locationId, ['events', i]));
+  definition.events?.forEach((event, i) => {
+    checkPlace(event.locationId, ['events', i]);
+    const situation = event.situation;
+    if (!situation) return;
+    function checkRoutes(routes: NonNullable<typeof situation>['blockedRoutes'], path:(string|number)[]) {
+      for (const [j,r] of routes.entries()) {
+        const a=definition.locations.findIndex(p=>p.id===r.from), b=definition.locations.findIndex(p=>p.id===r.to);
+        if(a<0 || b<0 || Math.abs(a-b)!==1)
+          ctx.addIssue({code:'custom',path:[...path,'blockedRoutes',j],message:'限制路线必须连接地图上相邻的两个地点'});
+      }
+    }
+    const base = ['events',i,'situation'];
+    checkRoutes(situation.blockedRoutes,base);
+    situation.actions.forEach((action,j)=>{
+      const path = [...base,'actions',j];
+      if (action.locationId) checkPlace(action.locationId,path);
+      checkRoutes(action.next.blockedRoutes,[...path,'next']);
+    });
+  });
 });
 
 // Older fixed-cast scenarios keep their explicit starting cast and map. A

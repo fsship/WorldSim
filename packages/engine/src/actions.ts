@@ -1,6 +1,6 @@
-import { carriedItems, inspectableItems, isPrivateSpeech, populationHere, roomDescription, readObjectAction, movementLocations, readMovement, type ActionIntent, type Character, type Observation, type DialogueLine, type PlayerInput, type StateChange, type WorldState } from "@worldsim/shared";
+import { carriedItems, inspectableItems, isPrivateSpeech, roomDescription, readObjectAction, movementLocations, readMovement, type ActionIntent, type Character, type Observation, type DialogueLine, type PlayerInput, type StateChange, type WorldState } from "@worldsim/shared";
 import { impliedListener, lastNpcLine } from "./conversation";
-import { knownFacts, player, present } from "./state";
+import { availableSituationActions, blockedRoute, visibleSituations, knownFacts, player, present } from "./state";
 import { planReading, type ReadingPlan } from "./reading";
 
 interface Candidate {
@@ -15,6 +15,7 @@ type OrderRule = WorldState["rules"]["orders"][number];
 
 /** A semantic plan carries resolved references, never permission to write an effect. */
 export interface ActionMeaning {
+  vehicle?:boolean;
   speech?: {private:boolean; courteous:boolean; targetId?:string; targetUnavailable?:boolean};
   order?: {private?:boolean; targetId:string; order?:OrderRule; summary?:string};
   discovery?: WorldState["rules"]["discoveries"][number];
@@ -191,6 +192,12 @@ export function adjudicate(world: WorldState, text: string, intent: ActionIntent
   return {...action, reading, checks:[...action.checks, "文书在场，只展示实际读到的条目"]};
 }
 
+function localSituationSummary(world:WorldState, actor:Character):string {
+  return visibleSituations(world,actor).filter(s => s.locationId === actor.locationId ||
+    s.blockedRoutes.some(route => route.from === actor.locationId || route.to === actor.locationId))
+    .map(s=>s.summary).join(" ");
+}
+
 function singleAction(world: WorldState, text: string, intent: ActionIntent, explicit?: PlayerInput, meaning?: ActionMeaning): Adjudication {
   const speechLine = explicit?.dialogue;
   const verb = meaning ? "" : text.replace(prefix, "");
@@ -221,7 +228,17 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
     const dest = matches[0];
     if (dest.id === room.id) return refused("你已经在" + room.name + "。" + options);
     if (!room.exits.includes(dest.id)) return refused("从" + room.name + "不能直接到" + dest.name + "。" + options);
-    const operation = line("travel", "你来到" + dest.name + "。", 5, [{op:"move", actor:king.id, to:dest.id}]);
+    const vehicle = meaning?.vehicle || request.vehicle;
+    const barrier = blockedRoute(world,room.id,dest.id,!!vehicle);
+    if (barrier) {
+      const known = visibleSituations(world,king);
+      const report = known.find(s => s.id === barrier.id && s.blockedRoutes.length);
+      const choices = known.flatMap(s => availableSituationActions(world,s,king));
+      const options = choices.length ? "你可以" + choices.map(a => "「" + a.summary + "」").join("，或") + "。" : "";
+      return refused((report?.summary ?? "") + "从" + room.name + "到" + dest.name + "的路线目前" +
+        (vehicle ? "无法驾乘通行。" : "无法通行。") + options);
+    }
+    const operation = line("travel", "你来到" + dest.name + "。", 5, [{op:"move", actor:king.id, to:dest.id,...(vehicle ? {vehicle:true} : {})}]);
     if (request.followUp) operation.lines.push({kind:"system", text:"本回合已完成移动。接下来的行动请在新地点继续。"});
     return fixed(operation, "目的地与当前位置相邻", "行动明确指定了目的地");
   }
@@ -279,6 +296,8 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
         (meaning.discovery?.locationId === d.locationId && meaning.discovery.factId === d.factId);
       return searchRoom || d.objects.includes(focus) || (!d.objects.length && focus.length >= 2 && fact.source.endsWith(focus));
     });
+    const situation = localSituationSummary(world,king);
+    if (!clue && situation) return fixed(line("inspect", "你查看现场。" + situation, 3), "现场变化已记录");
     if (!clue) return fixed(line("inspect", searchRoom ? "你仔细查看了四周。" + room.description :
       "你在" + room.name + "检查了所指的地方，没有发现新的线索。", 3), "仅检查当前位置");
     const f = world.facts.find(f => f.id === clue.factId);
@@ -354,8 +373,8 @@ function singleAction(world: WorldState, text: string, intent: ActionIntent, exp
     return refused("请明确你此刻想亲自尝试的行动。");
   if (intent.kind === "look") {
     const gathered = people.map(c => c.role + "·" + c.name).join("、");
-    const others = gathered ? gathered + "也在这里。" : populationHere(world,room.id).length ? "" : "这里没有其他人。";
-    return fixed(line("observe", "你眼前是" + room.name + "。" + roomDescription(world,room) + others, 0));
+    const others = gathered ? gathered + "也在这里。" : "";
+    return fixed(line("observe", "你眼前是" + room.name + "。" + roomDescription(world,room) + localSituationSummary(world,king) + others, 0));
   }
   if (meaning ? meaning.activity === "listen" : /^(?:屏息|静下心|仔细|侧耳|停下来)?(?:聆听|倾听|听听|听)/.test(verb)) {
     const c = line("listen-room", "你静下心来。" + room.ambience, 1);

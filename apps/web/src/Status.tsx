@@ -5,7 +5,7 @@ import { dayText, timeText } from './api'
 function Heading({ name, label }: { name: IconName, label: string }) {
   return <h3 className="status-heading"><Icon name={name} size={15}/>{label}</h3>
 }
-export function Status({ state }: { state: PublicState }) {
+export function Status({ state, onChoose, busy }: { state: PublicState; onChoose:(action:string)=>void; busy:boolean }) {
   const conditionText: Record<string, string> = { healthy: '健康', dead: '死亡', detained: '受拘押' }
   return <aside className="status-panel" aria-label="世界状态">
     <div className="status-panel-title"><Icon name="panel" size={18}/><h2>世界状态</h2></div>
@@ -15,6 +15,20 @@ export function Status({ state }: { state: PublicState }) {
       <div className="clock-reading"><strong>{timeText(state.time)}</strong><span>{dayText(state.time)}</span></div>
     </section>
     {state.worldInfo && <details className="status-section world-info"><summary>世界信息</summary><p>{state.worldInfo}</p></details>}
+    {!!state.situations?.length && <section className="status-section">
+      <Heading name="journal" label="当前局势"/>
+      {state.situations.map(situation => <div key={situation.id} className="situation">
+        <p className="muted">{dayText(situation.updatedAt)} · {timeText(situation.updatedAt)}</p>
+        <p>{situation.summary}</p>
+        {!!situation.actions.length && <div className="situation-actions">
+          {situation.actions.map(action => <button className="secondary small" key={action} type="button"
+            disabled={busy} onClick={() => onChoose(action)}>{action}</button>)}
+        </div>}
+        {!!situation.decisions.length && <details><summary>此前的决定</summary>
+          {situation.decisions.map((decision,i) => <p key={i}>{dayText(decision.at)} {timeText(decision.at)} · {decision.outcome}</p>)}
+        </details>}
+      </div>)}
+    </section>}
     <section className="status-section">
       <Heading name="user" label="玩家角色"/>
       <div className="identity"><div className="identity-icon"><Icon name={state.scenarioId === 'palace' ? 'crown' : 'user'} size={24}/></div>
